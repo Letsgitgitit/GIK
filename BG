@@ -1,0 +1,190 @@
+0. Pre Requisite (10 min)
+
+0.1 Measures. Tabular Editor ▸ run P5W_MEASURES_TE2.csx BUILD 03k (revenue bps blank above 1,000 bps, ticket "< €1k"). Expect "updated 2 · unchanged 51". Ctrl+S ▸ Desktop ▸ File ▸ Save.
+
+0.2 Sort-by columns (Table view; skip any already done): P5W Map Period[Period] ▸ Order · P5W IntraGroup[Option] ▸ Order · DIM_PRODUCTLINE[Family] ▸ Family Order · FACT_SALES[Tenor Bucket] ▸ Tenor Bucket Sort. Hide the Order / Sort columns.
+
+0.3 New page. Right-click the page tabs ▸ New page ▸ rename P5 Product & Sales. Canvas: Format ▸ Canvas settings ▸ 16:9 (1280 × 720); page and wallpaper colours come from the theme.
+
+0.4 Page filters empty (Filters pane ▸ Filters on this page). Selection pane on (View ▸ Selection).
+
+1. Rail and header shapes (5 min)
+
+1.1 Go to P1 Overview. Selection pane ▸ Ctrl+click A0 Rail, A1 Nav Overview … A5 Nav P5 ▸ Ctrl+C. Back on P5 Product & Sales ▸ Ctrl+V: they land at the same positions. (Do not copy A6 / A7 Panel: that filter panel belongs to P1.) 1.2 Active page colour: A1 fill 
+#5E6E84, A5 fill 
+#46B6C9. A5 Action ▸ Page navigation ▸ P5 Product & Sales. Also on P1: set A5 Nav P5 ▸ Action ▸ Page navigation ▸ P5 Product & Sales. 1.3 B0 Header Back: Insert ▸ Shapes ▸ Rectangle · 60 · 8 · 1212 · 60 · fill 
+#1D2735, border 
+#2C3A4D 1 px, rounded corners 10 (or copy it from P1 with the rail).
+
+2. Header (20 min)
+B1 B1 Detail — 70 · 16 · 270 · 44
+Insert ▸ Button slicer. Field: P5W Detail (the parameter column; three tiles Product group / Product line / Instrument). Selection: Single select on, Force selection on. Layout 3 columns × 1 row.
+Selected state fill 
+#46B6C9, text 
+#0E141D; default fill 
+#26344A, text 
+#8C9BB0; 9 pt. Header on: Product detail, 9 pt. Click Product group before saving.
+Fallback: classic Slicer, Style Tile, horizontal, same field.
+B2 B2 CPH — 350 · 10 · 300 · 56
+Copy P1's B1 CPH slicer (it is already on CPH_Label) ▸ paste here ▸ retype position. Header text Client group (risk CPH). Optional: View ▸ Sync slicers ▸ tick P1 and P5 for this slicer, so a CPH chosen on P1 follows you to P5.
+B3 B3 Region — 660 · 10 · 140 · 56
+Insert ▸ Slicer. Field FACT_SALES[RegionName]. Dropdown, multi-select, header Sales region. Values 11 pt.
+B4 B4 Intra-group — 810 · 16 · 150 · 44
+Insert ▸ Button slicer. Field P5W IntraGroup[Option]. Single select on, Force selection on, 2 columns × 1 row.
+Selected state ▸ Fill ▸ fx ▸ Field value ▸ P5 Intra Colour (teal on Exclude, amber on Include). Text 
+#0E141D. Default state as B1. Header Intra-group. Click Exclude before saving.
+Fallback (no fx on the selected fill): fixed teal; the amber warning then lives in Z1's subtitle (flag it, I add it).
+B5 B5 Period — 970 · 10 · 200 · 56
+Copy P1's B3 Period ▸ paste ▸ retype position. Relative date ▸ This · Year. Header Reporting period.
+B6 B6 Sales As Of — 1180 · 10 · 84 · 56
+Insert ▸ Card (new). Data Asof Sales, rename Sales data. Callout 12 pt, label 9 pt.
+
+Checkpoint 1: header row; B1 on Product group, B4 on Exclude (teal), B6 reads "2 Nov".
+
+3. Z1 Product scorecard (20 min)
+Z1 Z1 Scorecard — 60 · 76 · 592 · 232
+Insert ▸ Table. Columns, in this order, renamed in the well: P5W Detail → "Product" · P5 Revenue → "€m" · P5 vs LY % → "vs LY" · P5 Z1 Sparkline → "26 weeks" · P5 Revenue bps → "rev bps" · P5 Tenor Text → "avg tenor" · P5 Avg Ticket Text → "avg ticket" · P5 CPHs → "CPHs".
+Number formats (Format ▸ Specific column): "€m" ▸ display units Millions, 1 decimal (or keep the measure's €355.7m); "vs LY" +0%; "rev bps" 1 decimal.
+vs LY colour: Cell elements ▸ series "vs LY" ▸ Font colour ▸ fx ▸ Field value ▸ P5 vs LY Colour.
+Sparkline: it is an Image URL measure. Format ▸ Image size height 18, width 80.
+Tooltips well: P5 Charges Label, P5 Markup bps, P5 Deals, P5 Revenue LY.
+Sort "€m" descending. Totals on (whole-book line). Text wrap off. Widths (Format ▸ Specific column ▸ Width): Product 150 · €m 62 · vs LY 50 · 26 weeks 86 · rev bps 50 · avg tenor 52 · avg ticket 60 · CPHs 48.
+Title Product scorecard. Subtitle on ▸ fx ▸ Field value ▸ P5 Z1 Subtitle (8 pt, 
+#8C9BB0).
+
+Check (Product group): total €2,093.6m, +10 % · GRI FIXED INCOME €355.7m +27 %, 1m, €131m, 417 CPHs · SECURITISATION €159.5m −41 %, 425 bps, hover → "incl. −€104.3m funding charges" · GRI LOANS / GMD MANAGEMENT "rev bps" empty (above 1,000 bps). Switch B1 to Product line → 38 rows, top GRI Rates €238.5m.
+
+Checkpoint 2: Z1 at Product group and at Product line (sparklines visible, not text).
+
+4. Z2 Revenue map (20 min) — build both versions, keep the one you prefer
+Z2a Z2a Map Period — 60 · 316 · 296 · 40
+Insert ▸ Button slicer. Field P5W Map Period[Period]. Single select on, Force selection on, 3 columns × 1 row, tiles 9 pt, styled as B1. Click YTD before saving.
+Z2 version A (colour = growth) Z2 Revenue Map — 60 · 356 · 296 · 356
+Insert ▸ Treemap. Category: P5W Detail. Values: P5 Map Revenue (rename "Revenue").
+Format ▸ Data colours (Colours) ▸ fx ▸ Format style Field value ▸ P5 Map Colour.
+Data labels on, Category labels on, 9 pt. Tooltips well: P5 Map Growth Label, P5 Map Revenue Prior.
+Title Revenue map. Subtitle fx ▸ P5 Map Title (8 pt muted).
+Z2 version B (family blocks) — build it on top, then compare
+Copy version A ▸ paste ▸ same position ▸ rename Z2 Revenue Map B. Category: DIM_PRODUCTLINE[Family], Details: P5W Detail. Data colours: fx off; set the 6 family colours by hand (FX 
+#46B6C9 · Rates 
+#9B8BD6 · Fixed income & treasury 
+#56C08D · Credit & securitisation 
+#E8597A · Equity 
+#E0A44B · Other 
+#8A97AB). Data labels ▸ Value ▸ (custom field, if offered) P5 Map Growth Label; else growth stays in the tooltip.
+At Instrument level, version B repeats an instrument in several family blocks (14 of 25 instruments cross families, PF-11b). Version A has no such issue.
+Toggle the eye in the Selection pane to compare. Delete the one you do not keep and name the survivor Z2 Revenue Map.
+
+Check: YTD €2,093.6m, +10 % · Same period LY €1,898.2m (vs 2024: −9 %) · Full year LY €2,189.0m (−9 %).
+
+5. F Mix by year (10 min)
+F F Mix By Year — 364 · 316 · 288 · 396
+Insert ▸ Stacked column chart (not 100 %: the measure is already a share). X: DIM_DATE[Year] (Type Categorical). Legend: DIM_PRODUCTLINE[Family]. Y: P5 F Share (rename "Share").
+Filters pane ▸ this visual ▸ Year ▸ Advanced: is greater than or equal to 2023 and is less than or equal to 2026.
+Colours per family (Format ▸ Columns ▸ Colours): as in step 4 version B.
+Y-axis off (range 0–1). Data labels on, 9 pt, colour 
+#0E141D. Custom label: Data labels ▸ Value ▸ field P5 F Share Label (blank under 8 %). Fallback: labels on all segments, 8 pt.
+Legend top, 9 pt. Title Mix by year. Subtitle (text) share of revenue · 2026 = to date · ignores the page period.
+
+Check: 2026 FX 17 % · Rates 29 % · Fixed income & treasury 25 % · Credit & securitisation 17 % · Equity 9 % · Other 2 % (no label); 2023 Credit & securitisation 25 %, Other 11 %.
+
+Checkpoint 3: Z2 (both versions if you still have them) and F.
+
+6. Cards C1–C3 (15 min) — build C1, copy ×2
+C1 C1 Recurring — 664 · 76 · 198 · 96
+Insert ▸ Card (new). Data P5 C1 Recurring Share, rename Recurring revenue. Callout 24 pt.
+Reference label P5 C1 Detail, 9 pt, 
+#8C9BB0.
+Check: 77 %, "1,304 CPHs trade ≥ 9 of 12 months · Nov 25 → Oct 26".
+C2 C2 Silent Limit — 869 · 76 · 198 · 96
+Copy C1 ▸ retype position ▸ Data P5 C2 Silent Limit, rename Silent limit · 16A, no deal 12m. Reference label P5 C2 Detail. Subtitle on ▸ fx ▸ P5 C2 Product Note, 8 pt, amber 
+#E0A44B (empty unless a product is picked).
+Check: €28.6bn, "1,354 CPHs · 6 % of 16A limit".
+C3 C3 Big Ticket — 1074 · 76 · 198 · 96
+Copy C1 ▸ Data P5 C3 Big Ticket Share, rename Big-ticket share · top 100 deals. Reference label P5 C3 Detail.
+Check: 11 %, "largest deal €12.5m · 24 Sep".
+
+Checkpoint 4: the three cards; then click a product in Z1 and check C2's subtitle appears.
+
+7. G Cross-sell and I Tenor (20 min)
+G G Cross-sell — 664 · 180 · 376 · 262
+Insert ▸ Matrix. Rows DIM_COUNTERPARTY[CPH_Label]. Columns DIM_PRODUCTLINE[Family], then DIM_PRODUCTLINE[ProductLineGroupName] under it (drill with the matrix +). Values P5 Revenue (rename "€m").
+Filters ▸ this visual: CPH_Label ▸ Basic ▸ untick (Blank); then CPH_Label ▸ Filter type Top N ▸ Top 8 ▸ By value P5 Revenue ▸ Apply.
+Cell elements ▸ Background colour ▸ on ▸ gradient, lowest 
+#1D2735, highest 
+#46B6C9. Font 9 pt.
+Row and column subtotals on. Tooltips well: P5 G Families Traded.
+Title Cross-sell, subtitle top 8 risk CPHs × product family · €m.
+I I Tenor — 1048 · 180 · 224 · 262
+Insert ▸ Line and stacked column chart. X FACT_SALES[Tenor Bucket] (Categorical). Column legend DIM_PRODUCTLINE[ProductLineGroupName]. Column y-axis P5 Revenue. Line y-axis P5 I Revenue bps (rename "rev bps").
+Filters ▸ this visual ▸ Tenor Bucket ▸ untick Undated.
+Sort axis ▸ Tenor Bucket ascending (1D, 30D, 6M, 1Y, 5Y, 10Y, 30Y).
+Legend off (21 groups do not fit). Column colours: theme order (as the mockup). Secondary Y-axis on, 8 pt. Primary Y-axis display units Millions.
+Title Revenue by tenor. Subtitle fx ▸ P5 I Subtitle ("€m by tenor at trade · undated €69.0m not shown").
+Check: 5Y is the tallest column (≈ €443m), 1D the smallest (≈ €81m). Click SECURITISATION in Z1: the bps line appears.
+8. Z6 Dependence, H Sellers, tooltip page (25 min)
+Z6 Z6 Dependence — 664 · 450 · 300 · 262
+Insert ▸ 100 % stacked bar chart. Y P5W Detail. X values, in order: P5 Z6 Top1 ("Top client"), P5 Z6 Top2to5 ("Clients 2–5"), P5 Z6 Rest ("Rest").
+Colours: coral 
+#E8597A · amber 
+#E0A44B · slate 
+#8A97AB.
+Tooltips well: P5 Z6 Top1 Label, P5 Z6 Top5 Share. Sort ▸ ⋯ ▸ Sort axis ▸ P5 Z6 Top5 Share ▸ descending (thin products on top).
+Filters ▸ this visual ▸ P5 Revenue (drag it in) ▸ is greater than 0.
+Title Who each product hangs on, subtitle top-5 risk CPH share · ≥ 55 % = thin. Data labels off.
+Check (Product group): the small lines (one or two clients) at the top; the large flow lines (FOREX LINEAR, GRI FIXED INCOME) near the bottom with top 5 around 10–20 %. Bars add to 100 %.
+H H Sellers — 972 · 450 · 300 · 262
+Insert ▸ Clustered bar chart. Y P5W Seller. X P5 H Revenue Top8 (rename "€m"). Sort by "€m" descending.
+Data labels on, display units Millions, 1 decimal. Bars teal. X-axis off.
+Title Revenue by desk. Subtitle fx ▸ P5 H Subtitle.
+H2 H2 Seller Switch — 1140 · 456 · 124 · 26
+Insert ▸ Button slicer. Field P5W Seller. Single select, Force selection, 2 columns, 8–9 pt, styled as B1. Click Desk before saving. Selection pane: H2 above H.
+Check: 8 bars, TSY NY €169.7m first, subtitle "desk on the deal · top 8 = 31 % of revenue". Salesperson → 8 names.
+Tooltip page P5 TT Seller
+New page ▸ rename P5 TT Seller. Format ▸ Page information ▸ Allow use as tooltip on. Canvas settings ▸ Type Tooltip (320 × 240).
+T1 Top Sales — Table · 8 · 8 · 304 · 108: FACT_SALES[SalesName], P5 Revenue. Filter SalesName ▸ Top N 5 by P5 Revenue. Title Top salespeople.
+T2 Top Clients — Table · 8 · 124 · 304 · 108: DIM_COUNTERPARTY[CPH_Label], P5 Revenue. Filters: CPH_Label not (Blank), Top N 5 by P5 Revenue. Title Top clients.
+Right-click the page tab ▸ Hide page.
+Back on P5 ▸ select H ▸ Format ▸ General ▸ Tooltips ▸ Type Report page ▸ Page P5 TT Seller.
+Check: hover TSY NY → its 5 salespeople and 5 clients.
+
+Checkpoint 5: lower half of the page (Z6, H with a tooltip open).
+
+9. Interactions (10 min)
+
+Format ▸ Edit interactions on. F = Filter (funnel), H = Highlight, None = ⊘.
+
+Source →	Z1	Z2	F	C1–C3	G	I	Z6	H
+B1 Detail	F	F	None	None	None	None	F	None
+B2 CPH, B3 Region, B4 Intra	F	F	F	F	F	F	F	F
+B5 Period	F	None	None	F	F	F	F	F
+Z2a Map period	None	F	None	None	None	None	None	None
+Z1 row click	–	H	H	F	F	F	F	F
+Z2 tile click	H	–	H	F	F	F	F	F
+G cell, I column, Z6 bar, H bar	F	F	H	F	F	F	F	F
+H2 Seller switch	None everywhere except H = F	
+
+B6 (sales as of) = None from every source. Edit interactions off.
+
+10. Committee view (10 min)
+Selection pane: H2 visible. View ▸ Bookmarks ▸ Add ▸ rename P5 Working.
+Set H2 on Desk, B4 on Exclude, hide H2 (eye off). Add ▸ P5 Committee.
+For both bookmarks (⋯): Data ticked, Display ticked, Current page ticked, Selected visuals with only H2 Seller Switch and B4 Intra-group selected ▸ ⋯ ▸ Update. (Data stays ticked here on purpose: the committee view must force Desk and Exclude; it touches no other slicer.)
+Insert ▸ Buttons ▸ Navigator ▸ Bookmark navigator · A8 Views · 4 · 560 · 44 · 100, vertical, text 8 pt, showing the two bookmarks (rename the tiles Work / Comm. via the bookmark names if they do not fit).
+Show H2 again, click Work before saving.
+11. Final checks (15 min)
+
+11.1 Layer order (top first): H2 · Z2a · everything else · B0 Header Back · A0 Rail. 11.2 Numbers (This Year, Exclude, no CPH): Z1 total €2,093.6m / +10 % · C1 77 % · C2 €28.6bn · C3 11 % · H TSY NY €169.7m · I subtitle undated €69.0m. Include: Z1 €2,445.9m / +25 %, B4 tile amber. 11.3 CPY-A's CPH in B2: Z1 total = P1 I1 revenue for the same period with B4 on Include. 11.4 Speed: View ▸ Performance analyzer ▸ Start recording ▸ Refresh visuals. Target ≤ 2,000 ms per visual. Likely heaviest: C1, C2 (12-month CPH scans), Z1 (sparkline) at Product line, Z6. Flag the list whatever it shows. 11.5 Text: nothing below 8 pt (subtitles) / 9 pt (everything else).
+
+Checkpoint 6: the full page (Work view) + Performance analyzer list. Checkpoint 7: Committee view.
+
+If something does not work
+Symptom	Likely cause	Fix
+Sparkline shows long text	Data category not Image URL	Tabular Editor ▸ P5 Z1 Sparkline ▸ Data Category = ImageUrl ▸ Ctrl+S
+"composite key" error on a visual	a measure reads a field parameter's label column	flag the measure name (the P5 ones read the Order column)
+Z2 colours ignore growth	a Details field is in the treemap	version A must have Category only
+H shows more than 8 bars	Top N filter added on the parameter	remove it; the measure does the top 8
+B4 tile not amber on Include	selected-state fx not offered	fallback in §2 B4
+C2 subtitle missing after a product click	interaction Z1 → C2 is None	§9: Z1 → C1–C3 = Filter
+Error icon on a visual	a measure broke	EVALUATE FILTER(SELECTCOLUMNS(INFO.MEASURES(),"Measure",[Name],"Error",[ErrorMessage]),[State]<>1) and flag it
+Visual > 2 s	—	flag the Performance analyzer list
