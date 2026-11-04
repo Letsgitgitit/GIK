@@ -1,0 +1,598 @@
+var dryRun = false;   // set to true to preview only
+
+var home = Model.Tables["_Measures"];
+var missing = new List<string>();
+Func<string, string, bool> hasCol = (t, c) => Model.Tables.Contains(t) && Model.Tables[t].Columns.Contains(c);
+foreach (var tc in new[] {
+    new[] { "P5W IntraGroup", "Option" }, new[] { "P5W Map Period", "Period" },
+    new[] { "P5W Detail", "P5W Detail Order" }, new[] { "P5W Seller", "P5W Seller Order" },
+    new[] { "DIM_PRODUCTLINE", "Family" }, new[] { "DIM_PRODUCTLINE", "ProductLineGroupName" },
+    new[] { "FACT_SALES", "Tenor Bucket" }, new[] { "FACT_SALES", "IsRebooked" }, new[] { "FACT_SALES", "DealLifeDays" },
+    new[] { "FACT_SALES", "NominalAmountEUR" }, new[] { "FACT_SALES", "MarkUpEUR" }, new[] { "FACT_SALES", "SourceApplication" },
+    new[] { "FACT_SALES", "ProductLineLongName" }, new[] { "FACT_SALES", "InstrumentLongName" },
+    new[] { "FACT_SALES", "DeskShortName" }, new[] { "FACT_SALES", "SalesName" }, new[] { "FACT_SALES", "RegionName" },
+    new[] { "DIM_COUNTERPARTY", "IsIntraGroup" }, new[] { "DIM_COUNTERPARTY", "CPH_Id" }, new[] { "DIM_COUNTERPARTY", "CPH_Label" },
+    new[] { "DIM_DATE", "YearMonth" }, new[] { "FACT_LIMIT_16A", "StructureType" }, new[] { "FACT_LIMIT_16A", "Amount" } })
+    if (!hasCol(tc[0], tc[1])) missing.Add("column " + tc[0] + "[" + tc[1] + "]");
+foreach (var n in new[] { "Rev Revenue EUR", "Rev Window Start", "Rev Window End", "Asof Sales Date", "16A Limit" })
+    if (!home.Measures.Contains(n)) missing.Add("P1 measure [" + n + "]");
+
+var defs = new List<string[]>();
+defs.Add(new[] { @"P5 Intra Mode", @"P5\1 Base", @"", @"", @"-- Intra-group switch (B4). Default Exclude: the bank's own group (DIM_COUNTERPARTY[IsIntraGroup]) leaves every P5 figure.
+SELECTEDVALUE ( 'P5W IntraGroup'[Option], ""Exclude"" )" });
+defs.Add(new[] { @"P5 Revenue", @"P5\1 Base", @"""€""#,0.0,,""m""", @"", @"-- THE P5 revenue rule (contract A3): Rev Revenue EUR (re-booked repos out) with the intra-group switch applied.
+-- Net revenue: negative rows (e.g. securitisation funding charges) stay in.
+VAR _mode = [P5 Intra Mode]
+RETURN
+    CALCULATE (
+        [Rev Revenue EUR],
+        KEEPFILTERS (
+            FILTER ( ALL ( DIM_COUNTERPARTY[IsIntraGroup] ),
+                _mode = ""Include"" || DIM_COUNTERPARTY[IsIntraGroup] = FALSE () ) )
+    )" });
+defs.Add(new[] { @"P5 Revenue LY", @"P5\1 Base", @"""€""#,0.0,,""m""", @"", @"-- Same span one year earlier: viewed in March, Jan-Mar of last year (window end capped at the last sales date).
+VAR _s = [Rev Window Start]
+VAR _e = [Rev Window End]
+RETURN
+    IF ( NOT ISBLANK ( _s ) && _e >= _s,
+        CALCULATE ( [P5 Revenue], REMOVEFILTERS ( DIM_DATE ),
+            DATESBETWEEN ( DIM_DATE[Date], EDATE ( _s, -12 ), EDATE ( _e, -12 ) ) ) )" });
+defs.Add(new[] { @"P5 vs LY %", @"P5\1 Base", @"+0%;-0%;0%", @"", @"VAR _ly = [P5 Revenue LY]
+RETURN IF ( _ly > 0, DIVIDE ( [P5 Revenue] - _ly, _ly ) )" });
+defs.Add(new[] { @"P5 Deals", @"P5\1 Base", @"#,0", @"", @"-- One row = one deal (PF-03: 1 row per DealOmegaId).
+VAR _mode = [P5 Intra Mode]
+RETURN
+    CALCULATE (
+        COUNTROWS ( FACT_SALES ),
+        FACT_SALES[IsRebooked] = FALSE (),
+        KEEPFILTERS (
+            FILTER ( ALL ( DIM_COUNTERPARTY[IsIntraGroup] ),
+                _mode = ""Include"" || DIM_COUNTERPARTY[IsIntraGroup] = FALSE () ) )
+    )" });
+defs.Add(new[] { @"P5 Nominal Cap", @"P5\1 Base", @"""€""#,0.0,,,""bn""", @"", @"-- Rows above this nominal are data errors or extreme tickets (PF-04: one row at EUR 1.58tn). Excluded from every
+-- nominal-based figure (bps, tenor, ticket), never from revenue.
+5E10" });
+defs.Add(new[] { @"P5 Nominal Clean", @"P5\1 Base", @"""€""#,0.0,,,""bn""", @"", @"VAR _mode = [P5 Intra Mode]
+VAR _cap = [P5 Nominal Cap]
+RETURN
+    CALCULATE (
+        SUM ( FACT_SALES[NominalAmountEUR] ),
+        FACT_SALES[IsRebooked] = FALSE (),
+        FACT_SALES[NominalAmountEUR] > 0,
+        FACT_SALES[NominalAmountEUR] <= _cap,
+        KEEPFILTERS (
+            FILTER ( ALL ( DIM_COUNTERPARTY[IsIntraGroup] ),
+                _mode = ""Include"" || DIM_COUNTERPARTY[IsIntraGroup] = FALSE () ) )
+    )" });
+defs.Add(new[] { @"P5 CPHs", @"P5\1 Base", @"#,0", @"", @"-- Risk CPHs with at least one deal in context (blank CPH not counted).
+VAR _mode = [P5 Intra Mode]
+RETURN
+    COUNTROWS (
+        FILTER (
+            CALCULATETABLE (
+                SUMMARIZE ( FACT_SALES, DIM_COUNTERPARTY[CPH_Id] ),
+                FACT_SALES[IsRebooked] = FALSE (),
+                KEEPFILTERS (
+            FILTER ( ALL ( DIM_COUNTERPARTY[IsIntraGroup] ),
+                _mode = ""Include"" || DIM_COUNTERPARTY[IsIntraGroup] = FALSE () ) )
+            ),
+            LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 ) )" });
+defs.Add(new[] { @"P5 Charges", @"P5\1 Base", @"""€""#,0.0,,""m""", @"", @"-- Securitisation funding / liquidity charges booked in the sales feed from 2026 (PF-02: negative rows, source
+-- ""Titrisation File"", none offsets a positive deal). Already inside P5 Revenue; shown in tooltips.
+CALCULATE (
+    [P5 Revenue],
+    FACT_SALES[TotalGainEUR] < 0,
+    FACT_SALES[SourceApplication] = ""Titrisation File""
+)" });
+defs.Add(new[] { @"P5 Charges Label", @"P5\1 Base", @"", @"", @"VAR _c = [P5 Charges]
+RETURN IF ( _c < 0, ""incl. -€"" & FORMAT ( -_c / 1E6, ""#,0.0"" ) & ""m funding charges"" )" });
+defs.Add(new[] { @"P5 Revenue bps", @"P5\2 Product", @"0.0", @"", @"-- Revenue / nominal x 10,000, rows with 0 < nominal <= cap (decision 3 Nov: replaces mark-up bps in Z1).
+-- Blank above 1,000 bps (10 %): there the nominal is not a real notional (GRI loans, GMD, XVA desks; check K2).
+VAR _cap = [P5 Nominal Cap]
+VAR _b =
+    DIVIDE (
+        CALCULATE ( [P5 Revenue], FACT_SALES[NominalAmountEUR] > 0, FACT_SALES[NominalAmountEUR] <= _cap ),
+        [P5 Nominal Clean] ) * 10000
+RETURN IF ( ABS ( _b ) <= 1000, _b )" });
+defs.Add(new[] { @"P5 Markup bps", @"P5\2 Product", @"0.00", @"", @"-- Mark-up / nominal x 10,000 (tooltip only; mark-up is a small part of revenue, PF-07b).
+VAR _cap = [P5 Nominal Cap]
+VAR _mode = [P5 Intra Mode]
+RETURN
+    DIVIDE (
+        CALCULATE ( SUM ( FACT_SALES[MarkUpEUR] ),
+            FACT_SALES[IsRebooked] = FALSE (),
+            FACT_SALES[NominalAmountEUR] > 0, FACT_SALES[NominalAmountEUR] <= _cap,
+            KEEPFILTERS (
+            FILTER ( ALL ( DIM_COUNTERPARTY[IsIntraGroup] ),
+                _mode = ""Include"" || DIM_COUNTERPARTY[IsIntraGroup] = FALSE () ) ) ),
+        [P5 Nominal Clean] ) * 10000" });
+defs.Add(new[] { @"P5 Tenor Days", @"P5\2 Product", @"#,0", @"", @"-- Nominal-weighted average DealLifeDays over 0-18,262 days (sentinel maturities out), nominal <= cap.
+VAR _cap = [P5 Nominal Cap]
+VAR _mode = [P5 Intra Mode]
+RETURN
+    CALCULATE (
+        DIVIDE (
+            SUMX ( FACT_SALES, FACT_SALES[NominalAmountEUR] * FACT_SALES[DealLifeDays] ),
+            SUM ( FACT_SALES[NominalAmountEUR] ) ),
+        FACT_SALES[IsRebooked] = FALSE (),
+        FACT_SALES[NominalAmountEUR] > 0, FACT_SALES[NominalAmountEUR] <= _cap,
+        FACT_SALES[DealLifeDays] >= 0, FACT_SALES[DealLifeDays] <= 18262,
+        KEEPFILTERS (
+            FILTER ( ALL ( DIM_COUNTERPARTY[IsIntraGroup] ),
+                _mode = ""Include"" || DIM_COUNTERPARTY[IsIntraGroup] = FALSE () ) )
+    )" });
+defs.Add(new[] { @"P5 Tenor Text", @"P5\2 Product", @"", @"", @"-- Under 30 days in days, 30-365 days in months, above in years (decision 2 Nov).
+VAR _d = [P5 Tenor Days]
+RETURN
+    SWITCH ( TRUE (),
+        ISBLANK ( _d ), BLANK (),
+        _d < 30, FORMAT ( _d, ""0"" ) & ""d"",
+        _d <= 365, FORMAT ( _d / 30.4, ""0"" ) & ""m"",
+        FORMAT ( _d / 365.25, ""0.0"" ) & ""y"" )" });
+defs.Add(new[] { @"P5 Avg Ticket", @"P5\2 Product", @"""€""#,0.0,,""m""", @"", @"VAR _cap = [P5 Nominal Cap]
+RETURN
+    DIVIDE ( [P5 Nominal Clean],
+        CALCULATE ( [P5 Deals], FACT_SALES[NominalAmountEUR] > 0, FACT_SALES[NominalAmountEUR] <= _cap ) )" });
+defs.Add(new[] { @"P5 Avg Ticket Text", @"P5\2 Product", @"", @"", @"VAR _t = [P5 Avg Ticket]
+RETURN
+    SWITCH ( TRUE (),
+        ISBLANK ( _t ), BLANK (),
+        _t >= 1E9, ""€"" & FORMAT ( _t / 1E9, ""0.0"" ) & ""bn"",
+        _t >= 1E7, ""€"" & FORMAT ( _t / 1E6, ""0"" ) & ""m"",
+        _t >= 1E6, ""€"" & FORMAT ( _t / 1E6, ""0.0"" ) & ""m"",
+        _t >= 1E3, ""€"" & FORMAT ( _t / 1E3, ""0"" ) & ""k"",
+        ""< €1k"" )" });
+defs.Add(new[] { @"P5 Z1 Sparkline", @"P5\2 Product", @"", @"ImageUrl", @"-- 26 weekly revenue points ending at the window end; SVG 80 x 18 (integer coordinates: no decimal separator issue).
+VAR _e = [Rev Window End]
+VAR _days =
+    CALCULATETABLE ( VALUES ( DIM_DATE[Date] ), REMOVEFILTERS ( DIM_DATE ),
+        DATESBETWEEN ( DIM_DATE[Date], _e - 181, _e ) )
+VAR _dRev =
+    ADDCOLUMNS ( _days,
+        ""@w"", 25 - INT ( ( _e - DIM_DATE[Date] ) / 7 ),
+        ""@r"", VAR _dd = DIM_DATE[Date]
+              RETURN CALCULATE ( [P5 Revenue], REMOVEFILTERS ( DIM_DATE ), DIM_DATE[Date] = _dd ) )
+VAR _pts =
+    ADDCOLUMNS ( GENERATESERIES ( 0, 25, 1 ),
+        ""@v"", VAR _x = [Value] RETURN SUMX ( FILTER ( _dRev, [@w] = _x ), [@r] ) + 0 )
+VAR _mn = MINX ( _pts, [@v] )
+VAR _mx = MAXX ( _pts, [@v] )
+VAR _rng = IF ( _mx = _mn, 1, _mx - _mn )
+VAR _col = IF ( [P5 vs LY %] < 0, ""%23E8597A"", ""%2346B6C9"" )
+VAR _poly =
+    CONCATENATEX ( _pts,
+        FORMAT ( [Value] * 4, ""0"" ) & "","" & FORMAT ( 38 - ROUND ( ( [@v] - _mn ) / _rng * 36, 0 ), ""0"" ),
+        "" "", [Value], ASC )
+RETURN
+    IF ( NOT ISBLANK ( _e ) && ( _mx <> 0 || _mn <> 0 ),
+        ""data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='18' viewBox='0 0 100 40' preserveAspectRatio='none'>""
+            & ""<polyline fill='none' stroke='"" & _col & ""' stroke-width='2.5' points='"" & _poly & ""'/></svg>"" )" });
+defs.Add(new[] { @"P5 Z1 Subtitle", @"P5\2 Product", @"", @"", @"-- Reads the parameter's Order column: the label column is part of a composite key and cannot be read directly.
+VAR _lvl = SWITCH ( SELECTEDVALUE ( 'P5W Detail'[P5W Detail Order], 0 ), 1, ""product line"", 2, ""instrument"", ""product group"" )
+VAR _s = [Rev Window Start]
+VAR _e = [Rev Window End]
+VAR _per = IF ( _s = DATE ( YEAR ( _e ), 1, 1 ), ""YTD"", FORMAT ( _s, ""d mmm"" ) & "" → "" & FORMAT ( _e, ""d mmm yyyy"" ) )
+RETURN _per & "" · by "" & _lvl & "" · sorted by revenue""" });
+defs.Add(new[] { @"P5 Map Period", @"P5\3 Map and mix", @"", @"", @"SELECTEDVALUE ( 'P5W Map Period'[Period], ""YTD"" )" });
+defs.Add(new[] { @"P5 Map Start", @"P5\3 Map and mix", @"d mmm yyyy", @"", @"-- Own period (Z2a), ignores the page period. Anchored on the last sales date loaded.
+VAR _a = [Asof Sales Date]
+RETURN IF ( [P5 Map Period] = ""YTD"", DATE ( YEAR ( _a ), 1, 1 ), DATE ( YEAR ( _a ) - 1, 1, 1 ) )" });
+defs.Add(new[] { @"P5 Map End", @"P5\3 Map and mix", @"d mmm yyyy", @"", @"VAR _a = [Asof Sales Date]
+RETURN
+    SWITCH ( [P5 Map Period],
+        ""Same period LY"", EDATE ( _a, -12 ),
+        ""Full year LY"", DATE ( YEAR ( _a ) - 1, 12, 31 ),
+        _a )" });
+defs.Add(new[] { @"P5 Map Revenue", @"P5\3 Map and mix", @"""€""#,0.0,,""m""", @"", @"VAR _s = [P5 Map Start]
+VAR _e = [P5 Map End]
+RETURN CALCULATE ( [P5 Revenue], REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _s, _e ) )" });
+defs.Add(new[] { @"P5 Map Revenue Prior", @"P5\3 Map and mix", @"""€""#,0.0,,""m""", @"", @"-- The comparable window one year earlier.
+VAR _s = EDATE ( [P5 Map Start], -12 )
+VAR _e = EDATE ( [P5 Map End], -12 )
+RETURN CALCULATE ( [P5 Revenue], REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _s, _e ) )" });
+defs.Add(new[] { @"P5 Map Growth %", @"P5\3 Map and mix", @"+0%;-0%;0%", @"", @"VAR _p = [P5 Map Revenue Prior]
+RETURN IF ( _p > 0, DIVIDE ( [P5 Map Revenue] - _p, _p ) )" });
+defs.Add(new[] { @"P5 Map Colour", @"P5\3 Map and mix", @"", @"", @"VAR _g = [P5 Map Growth %]
+RETURN
+    SWITCH ( TRUE (),
+        ISBLANK ( _g ), ""#8C9BB0"",
+        _g <= -0.20, ""#E8597A"",
+        _g < -0.05, ""#B5677A"",
+        _g <= 0.05, ""#5C6B80"",
+        _g < 0.20, ""#3E8C9B"",
+        ""#46B6C9"" )" });
+defs.Add(new[] { @"P5 Map Growth Label", @"P5\3 Map and mix", @"", @"", @"VAR _g = [P5 Map Growth %]
+RETURN
+    IF ( NOT ISBLANK ( _g ),
+        FORMAT ( _g, ""+0%;-0%;0%"" ) & "" vs "" & FORMAT ( EDATE ( [P5 Map Start], -12 ), ""d mmm"" ) & "" → ""
+            & FORMAT ( EDATE ( [P5 Map End], -12 ), ""d mmm yyyy"" ) )" });
+defs.Add(new[] { @"P5 Map Title", @"P5\3 Map and mix", @"", @"", @"VAR _s = [P5 Map Start]
+VAR _e = [P5 Map End]
+RETURN
+    FORMAT ( _s, ""d mmm"" ) & "" → "" & FORMAT ( _e, ""d mmm yyyy"" ) & "" · colour = growth vs ""
+        & FORMAT ( EDATE ( _s, -12 ), ""d mmm"" ) & "" → "" & FORMAT ( EDATE ( _e, -12 ), ""d mmm yyyy"" )" });
+defs.Add(new[] { @"P5 F Revenue SP", @"P5\3 Map and mix", @"""€""#,0.0,,""m""", @"", @"-- Revenue of the year on the axis, 1 Jan -> the same day and month as the last sales date (every year cut at the same
+-- date, so 2026 to date compares like for like with earlier years). F in its ""EUR m"" view.
+VAR _y = SELECTEDVALUE ( DIM_DATE[Year] )
+VAR _a = [Asof Sales Date]
+RETURN
+    IF ( NOT ISBLANK ( _y ),
+        CALCULATE ( [P5 Revenue], REMOVEFILTERS ( DIM_DATE ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( _y, 1, 1 ), DATE ( _y, MONTH ( _a ), DAY ( _a ) ) ) ) )" });
+defs.Add(new[] { @"P5 F Revenue SP LY", @"P5\3 Map and mix", @"""€""#,0.0,,""m""", @"", @"-- Same cut, the year before.
+VAR _y = SELECTEDVALUE ( DIM_DATE[Year] )
+VAR _a = [Asof Sales Date]
+RETURN
+    IF ( NOT ISBLANK ( _y ),
+        CALCULATE ( [P5 Revenue], REMOVEFILTERS ( DIM_DATE ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( _y - 1, 1, 1 ), DATE ( _y - 1, MONTH ( _a ), DAY ( _a ) ) ) ) )" });
+defs.Add(new[] { @"P5 F Share", @"P5\3 Map and mix", @"0%", @"", @"-- Share of the year's revenue, same cut (F in its ""Share"" view; also the segment label in both views).
+DIVIDE ( [P5 F Revenue SP], CALCULATE ( [P5 F Revenue SP], REMOVEFILTERS ( DIM_PRODUCTLINE ) ) )" });
+defs.Add(new[] { @"P5 F Share Label", @"P5\3 Map and mix", @"", @"", @"VAR _s = [P5 F Share]
+RETURN IF ( _s >= 0.08, FORMAT ( _s, ""0%"" ) )" });
+defs.Add(new[] { @"P5 F Tooltip", @"P5\3 Map and mix", @"", @"", @"-- ""FX EUR 388m · +3% vs 2025 · share 17.4% (-0.3pp)"": shows growth even when the share falls.
+VAR _y = SELECTEDVALUE ( DIM_DATE[Year] )
+VAR _r = [P5 F Revenue SP]
+VAR _ly = [P5 F Revenue SP LY]
+VAR _sh = [P5 F Share]
+VAR _shLy = DIVIDE ( _ly, CALCULATE ( [P5 F Revenue SP LY], REMOVEFILTERS ( DIM_PRODUCTLINE ) ) )
+VAR _g = IF ( _ly > 0, DIVIDE ( _r - _ly, _ly ) )
+RETURN
+    IF ( NOT ISBLANK ( _r ),
+        ""€"" & FORMAT ( _r / 1E6, ""#,0"" ) & ""m""
+            & IF ( NOT ISBLANK ( _g ), "" · "" & FORMAT ( _g, ""+0%;-0%;0%"" ) & "" vs "" & FORMAT ( _y - 1, ""0"" ) )
+            & "" · share "" & FORMAT ( _sh, ""0.0%"" )
+            & IF ( NOT ISBLANK ( _shLy ), "" ("" & FORMAT ( ( _sh - _shLy ) * 100, ""+0.0;-0.0;0.0"" ) & ""pp)"" ) )" });
+defs.Add(new[] { @"P5 F Subtitle", @"P5\3 Map and mix", @"", @"", @"VAR _a = [Asof Sales Date]
+RETURN ""each year 1 Jan → "" & FORMAT ( _a, ""d mmm"" ) & "" · ignores the page period""" });
+defs.Add(new[] { @"P5 W12 End", @"P5\4 Cards", @"d mmm yyyy", @"", @"-- Cards C1/C2 look at the 12 COMPLETE calendar months up to the window end (contract 1.2).
+VAR _e = [Rev Window End]
+RETURN IF ( _e = EOMONTH ( _e, 0 ), _e, EOMONTH ( _e, -1 ) )" });
+defs.Add(new[] { @"P5 W12 Start", @"P5\4 Cards", @"d mmm yyyy", @"", @"EOMONTH ( [P5 W12 End], -12 ) + 1" });
+defs.Add(new[] { @"P5 C1 Recurring Share", @"P5\4 Cards", @"0%", @"", @"-- Revenue of CPHs with revenue > 0 in at least 9 of the 12 complete months / revenue of all CPHs (blank CPH out).
+VAR _s = [P5 W12 Start]
+VAR _e = [P5 W12 End]
+VAR _pairs =
+    CALCULATETABLE (
+        FILTER (
+            ADDCOLUMNS ( SUMMARIZE ( FACT_SALES, DIM_COUNTERPARTY[CPH_Id], DIM_DATE[YearMonth] ),
+                ""@r"", [P5 Revenue] ),
+            LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 && [@r] > 0 ),
+        REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _s, _e ) )
+VAR _rec =
+    SELECTCOLUMNS (
+        FILTER ( GROUPBY ( _pairs, DIM_COUNTERPARTY[CPH_Id], ""@m"", COUNTX ( CURRENTGROUP (), [@r] ) ), [@m] >= 9 ),
+        ""c"", DIM_COUNTERPARTY[CPH_Id] )
+VAR _revRec = CALCULATE ( [P5 Revenue], REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _s, _e ),
+    TREATAS ( _rec, DIM_COUNTERPARTY[CPH_Id] ) )
+VAR _revAll = CALCULATE ( [P5 Revenue], REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _s, _e ),
+    KEEPFILTERS ( LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 ) )
+RETURN DIVIDE ( _revRec, _revAll )" });
+defs.Add(new[] { @"P5 C1 Detail", @"P5\4 Cards", @"", @"", @"VAR _s = [P5 W12 Start]
+VAR _e = [P5 W12 End]
+VAR _pairs =
+    CALCULATETABLE (
+        FILTER (
+            ADDCOLUMNS ( SUMMARIZE ( FACT_SALES, DIM_COUNTERPARTY[CPH_Id], DIM_DATE[YearMonth] ),
+                ""@r"", [P5 Revenue] ),
+            LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 && [@r] > 0 ),
+        REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _s, _e ) )
+VAR _rec =
+    SELECTCOLUMNS (
+        FILTER ( GROUPBY ( _pairs, DIM_COUNTERPARTY[CPH_Id], ""@m"", COUNTX ( CURRENTGROUP (), [@r] ) ), [@m] >= 9 ),
+        ""c"", DIM_COUNTERPARTY[CPH_Id] )
+RETURN
+    FORMAT ( COUNTROWS ( _rec ), ""#,0"" ) & "" CPHs trade ≥ 9 of 12 months · ""
+        & FORMAT ( _s, ""mmm yy"" ) & "" → "" & FORMAT ( _e, ""mmm yy"" )" });
+defs.Add(new[] { @"P5 C2 Silent Limit", @"P5\4 Cards", @"""€""#,0.0,,,""bn""", @"", @"-- 16A limit (last 16A snapshot <= window end) of CPHs with no deal in the 12 complete months.
+-- Trading test: any deal (net-negative traders are not silent, Q2), all rows, ignores Region, follows product filters.
+-- Intra = Exclude: holders drop every CPH with an intra-group entity (contract 1.2).
+VAR _mode = [P5 Intra Mode]
+VAR _end = [Rev Window End]
+VAR _s = [P5 W12 Start]
+VAR _e = [P5 W12 End]
+VAR _snap = CALCULATE ( MAX ( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] <= _end )
+VAR _trading =
+    SELECTCOLUMNS (
+        CALCULATETABLE (
+            FILTER ( SUMMARIZE ( FACT_SALES, DIM_COUNTERPARTY[CPH_Id] ), LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 ),
+            REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _s, _e ),
+            REMOVEFILTERS ( FACT_SALES[RegionName] ),
+            FACT_SALES[IsRebooked] = FALSE () ),
+        ""c"", DIM_COUNTERPARTY[CPH_Id] )
+VAR _intra =
+    SELECTCOLUMNS (
+        CALCULATETABLE ( FILTER ( VALUES ( DIM_COUNTERPARTY[CPH_Id] ), LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 ),
+            REMOVEFILTERS ( DIM_COUNTERPARTY ), DIM_COUNTERPARTY[IsIntraGroup] = TRUE () ),
+        ""c"", DIM_COUNTERPARTY[CPH_Id] )
+VAR _holdersAll =
+    SELECTCOLUMNS (
+        CALCULATETABLE (
+            FILTER ( SUMMARIZE ( FACT_LIMIT_16A, DIM_COUNTERPARTY[CPH_Id] ), LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 ),
+            REMOVEFILTERS ( DIM_DATE ), FACT_LIMIT_16A[SnapshotDate] = _snap,
+            FACT_LIMIT_16A[StructureType] <> ""No authorisation"", FACT_LIMIT_16A[Amount] > 1 ),
+        ""c"", DIM_COUNTERPARTY[CPH_Id] )
+VAR _holders = EXCEPT ( _holdersAll, FILTER ( _intra, _mode <> ""Include"" ) )
+VAR _silent = EXCEPT ( _holders, _trading )
+VAR _limSilent =
+    IF ( NOT ISEMPTY ( _silent ),
+        CALCULATE ( [16A Limit], REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _s, _end ),
+            TREATAS ( _silent, DIM_COUNTERPARTY[CPH_Id] ) ) )
+RETURN _limSilent" });
+defs.Add(new[] { @"P5 C2 Detail", @"P5\4 Cards", @"", @"", @"VAR _mode = [P5 Intra Mode]
+VAR _end = [Rev Window End]
+VAR _s = [P5 W12 Start]
+VAR _e = [P5 W12 End]
+VAR _snap = CALCULATE ( MAX ( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] <= _end )
+VAR _trading =
+    SELECTCOLUMNS (
+        CALCULATETABLE (
+            FILTER ( SUMMARIZE ( FACT_SALES, DIM_COUNTERPARTY[CPH_Id] ), LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 ),
+            REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _s, _e ),
+            REMOVEFILTERS ( FACT_SALES[RegionName] ),
+            FACT_SALES[IsRebooked] = FALSE () ),
+        ""c"", DIM_COUNTERPARTY[CPH_Id] )
+VAR _intra =
+    SELECTCOLUMNS (
+        CALCULATETABLE ( FILTER ( VALUES ( DIM_COUNTERPARTY[CPH_Id] ), LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 ),
+            REMOVEFILTERS ( DIM_COUNTERPARTY ), DIM_COUNTERPARTY[IsIntraGroup] = TRUE () ),
+        ""c"", DIM_COUNTERPARTY[CPH_Id] )
+VAR _holdersAll =
+    SELECTCOLUMNS (
+        CALCULATETABLE (
+            FILTER ( SUMMARIZE ( FACT_LIMIT_16A, DIM_COUNTERPARTY[CPH_Id] ), LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 ),
+            REMOVEFILTERS ( DIM_DATE ), FACT_LIMIT_16A[SnapshotDate] = _snap,
+            FACT_LIMIT_16A[StructureType] <> ""No authorisation"", FACT_LIMIT_16A[Amount] > 1 ),
+        ""c"", DIM_COUNTERPARTY[CPH_Id] )
+VAR _holders = EXCEPT ( _holdersAll, FILTER ( _intra, _mode <> ""Include"" ) )
+VAR _silent = EXCEPT ( _holders, _trading )
+VAR _limSilent =
+    IF ( NOT ISEMPTY ( _silent ),
+        CALCULATE ( [16A Limit], REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _s, _end ),
+            TREATAS ( _silent, DIM_COUNTERPARTY[CPH_Id] ) ) )
+VAR _limHolders = CALCULATE ( [16A Limit], REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _s, _end ),
+    TREATAS ( _holders, DIM_COUNTERPARTY[CPH_Id] ) )
+RETURN
+    FORMAT ( COUNTROWS ( _silent ), ""#,0"" ) & "" CPHs · "" & FORMAT ( DIVIDE ( _limSilent, _limHolders ), ""0%"" )
+        & "" of 16A limit""" });
+defs.Add(new[] { @"P5 C2 Product Note", @"P5\4 Cards", @"", @"", @"-- Card subtitle when a product is filtered: the card then lists limit holders not trading that product.
+VAR _g = IF ( ISFILTERED ( DIM_PRODUCTLINE[ProductLineGroupName] ), SELECTEDVALUE ( DIM_PRODUCTLINE[ProductLineGroupName], ""the selected products"" ) )
+VAR _l = IF ( ISFILTERED ( FACT_SALES[ProductLineLongName] ), SELECTEDVALUE ( FACT_SALES[ProductLineLongName], ""the selected products"" ) )
+VAR _i = IF ( ISFILTERED ( FACT_SALES[InstrumentLongName] ), SELECTEDVALUE ( FACT_SALES[InstrumentLongName], ""the selected products"" ) )
+VAR _f = IF ( ISFILTERED ( DIM_PRODUCTLINE[Family] ), SELECTEDVALUE ( DIM_PRODUCTLINE[Family], ""the selected products"" ) )
+VAR _n = COALESCE ( _i, _l, _g, _f )
+RETURN IF ( NOT ISBLANK ( _n ), ""limit holders not trading "" & _n )" });
+defs.Add(new[] { @"P5 C3 Big Ticket Share", @"P5\4 Cards", @"0%", @"", @"-- Revenue of the 100 largest deals (rows >= the 100th largest value; ties included, PF-09) / revenue, page period.
+VAR _mode = [P5 Intra Mode]
+VAR _top =
+    CALCULATETABLE (
+        TOPN ( 100, VALUES ( FACT_SALES[TotalGainEUR] ), FACT_SALES[TotalGainEUR], DESC ),
+        FACT_SALES[IsRebooked] = FALSE (),
+        KEEPFILTERS (
+            FILTER ( ALL ( DIM_COUNTERPARTY[IsIntraGroup] ),
+                _mode = ""Include"" || DIM_COUNTERPARTY[IsIntraGroup] = FALSE () ) ) )
+VAR _thr = MINX ( _top, FACT_SALES[TotalGainEUR] )
+RETURN
+    IF ( NOT ISBLANK ( _thr ),
+        DIVIDE ( CALCULATE ( [P5 Revenue], FACT_SALES[TotalGainEUR] >= _thr ), [P5 Revenue] ) )" });
+defs.Add(new[] { @"P5 C3 Largest", @"P5\4 Cards", @"""€""#,0.0,,""m""", @"", @"VAR _mode = [P5 Intra Mode]
+VAR _top =
+    CALCULATETABLE (
+        TOPN ( 100, VALUES ( FACT_SALES[TotalGainEUR] ), FACT_SALES[TotalGainEUR], DESC ),
+        FACT_SALES[IsRebooked] = FALSE (),
+        KEEPFILTERS (
+            FILTER ( ALL ( DIM_COUNTERPARTY[IsIntraGroup] ),
+                _mode = ""Include"" || DIM_COUNTERPARTY[IsIntraGroup] = FALSE () ) ) )
+RETURN MAXX ( _top, FACT_SALES[TotalGainEUR] )" });
+defs.Add(new[] { @"P5 C3 Detail", @"P5\4 Cards", @"", @"", @"VAR _mode = [P5 Intra Mode]
+VAR _big = [P5 C3 Largest]
+VAR _d =
+    CALCULATE ( MAX ( FACT_SALES[DealDate] ), FACT_SALES[TotalGainEUR] = _big, FACT_SALES[IsRebooked] = FALSE (),
+        KEEPFILTERS (
+            FILTER ( ALL ( DIM_COUNTERPARTY[IsIntraGroup] ),
+                _mode = ""Include"" || DIM_COUNTERPARTY[IsIntraGroup] = FALSE () ) ) )
+RETURN IF ( NOT ISBLANK ( _big ), ""largest deal €"" & FORMAT ( _big / 1E6, ""0.0"" ) & ""m · "" & FORMAT ( _d, ""d mmm"" ) )" });
+defs.Add(new[] { @"P5 G Families Traded", @"P5\5 Clients and sellers", @"0", @"", @"COUNTROWS ( FILTER ( VALUES ( DIM_PRODUCTLINE[Family] ), [P5 Revenue] > 0 ) )" });
+defs.Add(new[] { @"P5 I Revenue bps", @"P5\5 Clients and sellers", @"0.0", @"", @"-- Line on I: only when one product is filtered (spot FX and 10y swaps never share a bps scale).
+VAR _one =
+    ( ISFILTERED ( DIM_PRODUCTLINE[ProductLineGroupName] ) && HASONEVALUE ( DIM_PRODUCTLINE[ProductLineGroupName] ) )
+        || ( ISFILTERED ( FACT_SALES[ProductLineLongName] ) && HASONEVALUE ( FACT_SALES[ProductLineLongName] ) )
+        || ( ISFILTERED ( FACT_SALES[InstrumentLongName] ) && HASONEVALUE ( FACT_SALES[InstrumentLongName] ) )
+RETURN IF ( _one, [P5 Revenue bps] )" });
+defs.Add(new[] { @"P5 I Undated", @"P5\5 Clients and sellers", @"""€""#,0.0,,""m""", @"", @"CALCULATE ( [P5 Revenue], FACT_SALES[Tenor Bucket] = ""Undated"" )" });
+defs.Add(new[] { @"P5 I Subtitle", @"P5\5 Clients and sellers", @"", @"", @"VAR _u = [P5 I Undated]
+RETURN ""€m by tenor at trade"" & IF ( _u <> 0, "" · undated €"" & FORMAT ( _u / 1E6, ""#,0.0"" ) & ""m not shown"" )" });
+defs.Add(new[] { @"P5 Z6 Top1", @"P5\5 Clients and sellers", @"""€""#,0.0,,""m""", @"", @"-- Largest risk CPH's revenue in the product (Z6).
+VAR _t =
+    FILTER (
+        ADDCOLUMNS ( SUMMARIZE ( FACT_SALES, DIM_COUNTERPARTY[CPH_Id] ), ""@r"", [P5 Revenue] ),
+        LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 && NOT ISBLANK ( [@r] ) )
+RETURN MAXX ( _t, [@r] )" });
+defs.Add(new[] { @"P5 Z6 Top5", @"P5\5 Clients and sellers", @"""€""#,0.0,,""m""", @"", @"VAR _t =
+    FILTER (
+        ADDCOLUMNS ( SUMMARIZE ( FACT_SALES, DIM_COUNTERPARTY[CPH_Id] ), ""@r"", [P5 Revenue] ),
+        LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 && NOT ISBLANK ( [@r] ) )
+RETURN SUMX ( TOPN ( 5, _t, [@r], DESC ), [@r] )" });
+defs.Add(new[] { @"P5 Z6 Top2to5", @"P5\5 Clients and sellers", @"""€""#,0.0,,""m""", @"", @"[P5 Z6 Top5] - [P5 Z6 Top1]" });
+defs.Add(new[] { @"P5 Z6 Rest", @"P5\5 Clients and sellers", @"""€""#,0.0,,""m""", @"", @"-- Everything outside the top 5, including revenue without a risk CPH.
+[P5 Revenue] - [P5 Z6 Top5]" });
+defs.Add(new[] { @"P5 Z6 Top5 Share", @"P5\5 Clients and sellers", @"0%", @"", @"DIVIDE ( [P5 Z6 Top5], [P5 Revenue] )" });
+defs.Add(new[] { @"P5 Z6 Top1 Label", @"P5\5 Clients and sellers", @"", @"", @"VAR _t =
+    FILTER (
+        ADDCOLUMNS ( SUMMARIZE ( FACT_SALES, DIM_COUNTERPARTY[CPH_Id] ), ""@r"", [P5 Revenue] ),
+        LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 && NOT ISBLANK ( [@r] ) )
+VAR _best = SELECTCOLUMNS ( TOPN ( 1, _t, [@r], DESC ), ""c"", DIM_COUNTERPARTY[CPH_Id] )
+VAR _lbl = CALCULATE ( MAX ( DIM_COUNTERPARTY[CPH_Label] ), REMOVEFILTERS ( DIM_COUNTERPARTY ),
+    TREATAS ( _best, DIM_COUNTERPARTY[CPH_Id] ) )
+RETURN IF ( NOT ISBLANK ( _lbl ), _lbl & "" · "" & FORMAT ( DIVIDE ( MAXX ( _t, [@r] ), [P5 Revenue] ), ""0%"" ) )" });
+defs.Add(new[] { @"P5 H Revenue Top8", @"P5\5 Clients and sellers", @"""€""#,0.0,,""m""", @"", @"-- H: revenue of the 8 largest desks / salespeople, blank for the rest (Top N filters are unreliable on a field parameter).
+VAR _r =
+    SWITCH ( TRUE (),
+        ISINSCOPE ( FACT_SALES[DeskShortName] ), RANKX ( ALLSELECTED ( FACT_SALES[DeskShortName] ), [P5 Revenue], , DESC ),
+        ISINSCOPE ( FACT_SALES[SalesName] ), RANKX ( ALLSELECTED ( FACT_SALES[SalesName] ), [P5 Revenue], , DESC ) )
+RETURN IF ( NOT ISBLANK ( _r ) && _r <= 8, [P5 Revenue] )" });
+defs.Add(new[] { @"P5 H Subtitle", @"P5\5 Clients and sellers", @"", @"", @"-- Order column, not the label (composite key of a field parameter). 0 = Desk, 1 = Salesperson.
+VAR _who = IF ( SELECTEDVALUE ( 'P5W Seller'[P5W Seller Order], 0 ) = 1, ""Salesperson"", ""Desk"" )
+VAR _top8 =
+    IF ( _who = ""Salesperson"",
+        SUMX ( TOPN ( 8, VALUES ( FACT_SALES[SalesName] ), [P5 Revenue], DESC ), [P5 Revenue] ),
+        SUMX ( TOPN ( 8, VALUES ( FACT_SALES[DeskShortName] ), [P5 Revenue], DESC ), [P5 Revenue] ) )
+RETURN
+    LOWER ( _who ) & "" on the deal · top 8 = "" & FORMAT ( DIVIDE ( _top8, [P5 Revenue] ), ""0%"" ) & "" of revenue""" });
+defs.Add(new[] { @"P5 vs LY Colour", @"P5\6 Format", @"", @"", @"VAR _p = [P5 vs LY %]
+RETURN SWITCH ( TRUE (), ISBLANK ( _p ), ""#8C9BB0"", _p >= 0, ""#56C08D"", ""#E8597A"" )" });
+defs.Add(new[] { @"P5 Intra Colour", @"P5\6 Format", @"", @"", @"-- B4 selected tile: teal on the default (Exclude), amber when intra-group is included.
+IF ( [P5 Intra Mode] = ""Include"", ""#E0A44B"", ""#46B6C9"" )" });
+
+foreach (var d in defs)
+    foreach (var mm in Model.AllMeasures.Where(x => x.Name == d[0] && x.Table.Name != "_Measures"))
+        missing.Add("name clash: [" + d[0] + "] already exists in table " + mm.Table.Name);
+if (missing.Count > 0) {
+    Info("STOPPED - nothing changed.\n" + string.Join("\n", missing));
+    return;
+}
+
+int created = 0, updated = 0, same = 0;
+var rep = new System.Text.StringBuilder();
+foreach (var d in defs) {
+    var exists = home.Measures.Contains(d[0]);
+    if (exists) {
+        var m = home.Measures[d[0]];
+        bool eq = m.Expression.Replace("\r", "").Trim() == d[4].Replace("\r", "").Trim()
+                  && m.DisplayFolder == d[1] && (m.FormatString ?? "") == d[2];
+        if (eq) { same++; continue; }
+        if (!dryRun) { m.Expression = d[4]; m.DisplayFolder = d[1]; m.FormatString = d[2]; if (d[3] != "") m.DataCategory = d[3]; }
+        updated++; rep.AppendLine((dryRun ? "WOULD UPDATE  " : "updated  ") + d[0]);
+    } else {
+        if (!dryRun) {
+            var m = home.AddMeasure(d[0], d[4], d[1]);
+            m.FormatString = d[2];
+            if (d[3] != "") m.DataCategory = d[3];
+        }
+        created++; rep.AppendLine((dryRun ? "WOULD CREATE  " : "created  ") + d[0]);
+    }
+}
+Info("P5W_MEASURES  BUILD 2026-11-04a" + (dryRun ? "   (DRY RUN - nothing changed)" : "") + "\n"
+     + "created " + created + " · updated " + updated + " · unchanged " + same + " (of " + defs.Count + ")\n\n"
+     + rep.ToString() + "\n"
+     + (dryRun ? "Set dryRun = false and run again to apply." : "Next: Ctrl+S, then P5W_MEASURES_CHECK.dax."));
+
+
+
+
+
+--
+// Expect: P5Measures 57, Broken 0.
+EVALUATE
+    ROW (
+        "P5Measures", COUNTROWS ( FILTER ( INFO.MEASURES (), LEFT ( [Name], 3 ) = "P5 " ) ),
+        "Broken", COUNTROWS ( FILTER ( INFO.MEASURES (), [State] <> 1 ) ) + 0
+    )
+
+// ---- K1 base figures, Exclude vs Include ------------------------------------------------------------------
+// Expect Exclude: Revenue ≈ €2,094m, LY ≈ €1,898m, Charges ≈ −€104m. Include: ≈ €2,446m, LY ≈ €1,954m (PF-05/06).
+EVALUATE
+    ADDCOLUMNS (
+        SELECTCOLUMNS ( { "Exclude", "Include" }, "Mode", [Value] ),
+        "Revenue", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Revenue], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "RevenueLY", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Revenue LY], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "vsLY", VAR k1 = [Mode] RETURN CALCULATE ( [P5 vs LY %], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "Deals", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Deals], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "CPHs", VAR k1 = [Mode] RETURN CALCULATE ( [P5 CPHs], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "RevBps", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Revenue bps], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "Tenor", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Tenor Text], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "Ticket", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Avg Ticket Text], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "Charges", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Charges], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "Subtitle", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Z1 Subtitle], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) )
+    )
+
+// ---- K2 scorecard by product group (Exclude, default) -----------------------------------------------------
+// Expect Rev / vsLY = PF-06 RevExcl / GrowthExcl (GRI FI €356m +27 %, EUR rates €183m +85 %, Securitisation €159m −41 %);
+// Tenor ≈ PF-07b Tenor_cap (EUR rates 1,602 d → 4.4y, Forex linear 127 d → 4m, GRI FI 44 d → 1m); Charges only on
+// Securitisation (and a little elsewhere). Top5Share ≥ 55 % = thin product.
+EVALUATE
+    SUMMARIZECOLUMNS (
+        DIM_PRODUCTLINE[Family], DIM_PRODUCTLINE[ProductLineGroupName],
+        DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ),
+        "Rev", [P5 Revenue], "vsLY", [P5 vs LY %], "RevBps", [P5 Revenue bps], "MarkupBps", [P5 Markup bps],
+        "TenorDays", [P5 Tenor Days], "Tenor", [P5 Tenor Text], "Ticket", [P5 Avg Ticket Text], "CPHs", [P5 CPHs],
+        "Charges", [P5 Charges Label], "Top5Share", [P5 Z6 Top5 Share], "Top1", [P5 Z6 Top1 Label]
+    )
+    ORDER BY [Rev] DESC
+
+// ---- K3 revenue map periods (whole book, Exclude) -----------------------------------------------------------
+// Expect YTD = K1 Exclude Revenue; Same period LY = K1 Exclude RevenueLY; Full year LY = 2025 full year.
+EVALUATE
+    ADDCOLUMNS (
+        SELECTCOLUMNS ( { "YTD", "Same period LY", "Full year LY" }, "Period", [Value] ),
+        "Start", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Start], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
+        "End", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map End], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
+        "Revenue", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Revenue], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
+        "Prior", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Revenue Prior], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
+        "Growth", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Growth %], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
+        "Colour", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Colour], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
+        "Title", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Title], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) )
+    )
+
+// ---- K4 mix by year: each year's shares add up to 100 % -------------------------------------------------------
+EVALUATE
+    FILTER (
+        SUMMARIZECOLUMNS (
+            DIM_DATE[Year], DIM_PRODUCTLINE[Family Order], DIM_PRODUCTLINE[Family],
+            "Share", [P5 F Share], "Label", [P5 F Share Label] ),
+        DIM_DATE[Year] >= 2023 && DIM_DATE[Year] <= 2026 )
+    ORDER BY DIM_DATE[Year], DIM_PRODUCTLINE[Family Order]
+
+// ---- K5 desks: exactly 8 rows carry a value; subtitle -----------------------------------------------------------
+EVALUATE
+    FILTER (
+        SUMMARIZECOLUMNS ( FACT_SALES[DeskShortName],
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ),
+            "Top8", [P5 H Revenue Top8], "Revenue", [P5 Revenue] ),
+        NOT ISBLANK ( [Top8] ) )
+    ORDER BY [Top8] DESC
+EVALUATE
+    CALCULATETABLE ( ROW ( "Subtitle", [P5 H Subtitle], "Undated", [P5 I Subtitle] ),
+        DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) )
+
+// ---- K6 TIMING: the whole scorecard at product line level (39 rows, sparkline included). NOTE THE SECONDS ---------
+EVALUATE
+    SUMMARIZECOLUMNS (
+        FACT_SALES[ProductLineLongName],
+        DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ),
+        "Rev", [P5 Revenue], "vsLY", [P5 vs LY %], "Spark", [P5 Z1 Sparkline], "RevBps", [P5 Revenue bps],
+        "Tenor", [P5 Tenor Text], "Ticket", [P5 Avg Ticket Text], "CPHs", [P5 CPHs]
+    )
+    ORDER BY [Rev] DESC
+
+// ---- K7 TIMING: the three cards, page default (Exclude). NOTE THE SECONDS --------------------------------------------
+// Expect C1 ≈ 77 %, "1,304 CPHs …"; C2 ≈ €30bn, "≈ 1,400 CPHs · 6 % of 16A limit"; C3 ≈ 11 %, "largest deal €12.5m · 24 Sep".
+EVALUATE
+    CALCULATETABLE (
+        ROW (
+            "C1", [P5 C1 Recurring Share], "C1Detail", [P5 C1 Detail],
+            "C2", [P5 C2 Silent Limit], "C2Detail", [P5 C2 Detail],
+            "C3", [P5 C3 Big Ticket Share], "C3Detail", [P5 C3 Detail]
+        ),
+        DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) )
+    )
+
+// ---- K8 mix by year, same cut every year (Exclude) -----------------------------------------------------------------
+// Expect: Share per year adds to 100 %; 2026 RevSP total ≈ K1 Exclude Revenue; 2025 total ≈ K1 Exclude RevenueLY.
+EVALUATE
+    FILTER (
+        SUMMARIZECOLUMNS (
+            DIM_DATE[Year], DIM_PRODUCTLINE[Family Order], DIM_PRODUCTLINE[Family],
+            "RevSP", [P5 F Revenue SP], "Share", [P5 F Share], "Tooltip", [P5 F Tooltip] ),
+        DIM_DATE[Year] >= 2023 && DIM_DATE[Year] <= 2026 )
+    ORDER BY DIM_DATE[Year], DIM_PRODUCTLINE[Family Order]
