@@ -1,0 +1,604 @@
+Option Explicit
+
+Private Const FILE_PATTERN As String = "HFDB Reporting - *.xls*"
+Private Const OUT_SUBFOLDER As String = "_hfnav_out"
+Private Const OUT_FILE As String = "HF_NAV_LONG.csv"
+Private Const LOG_SHEET As String = "HFNAV_LOG"
+Private Const BUILD As String = "2026-11-05a"
+
+' Output columns (order = CSV order)
+Private Const OUT_COLS As String = "MonthEnd|SourceFile|Layout|SourceRow|CPH_Name|Fund_Name|Rating|Strategy|ValidityDate|LastDDDate|NAV_EoY|NAV_Prev|NAV_Cur|Perf_EoY|Perf_Month|Perf_YTD|NAVChg_1M|NAVChg_YTD|Covenant"
+' Required fields (FAIL when missing)
+Private Const REQUIRED As String = "NAV_EoY|NAV_Prev|NAV_Cur|Perf_EoY|Perf_Month|Perf_YTD|NAVChg_1M|NAVChg_YTD|Covenant"
+' Field classes
+Private Const NUM_FIELDS As String = "|NAV_EoY|NAV_Prev|NAV_Cur|Perf_EoY|Perf_Month|Perf_YTD|NAVChg_1M|NAVChg_YTD|"
+Private Const DATE_FIELDS As String = "|ValidityDate|LastDDDate|"
+Private Const TEXT_FIELDS As String = "|Rating|Strategy|Covenant|"
+
+'------------------------------------------------------------------------------
+Public Sub BuildHfNavLong()
+    Dim folder As String, files As Collection, i As Long
+    Dim outWb As Workbook, outWs As Worksheet, logWs As Worksheet
+    Dim outRow As Long, logRow As Long, seen As Object
+    Dim nPass As Long, nWarn As Long, nFail As Long, st As String
+    Dim t0 As Double, outPath As String, cols As Variant
+
+    folder = PickFolder()
+    If folder = "" Then Exit Sub
+    Set files = ListFiles(folder)
+    If files.Count = 0 Then
+        MsgBox "No file matching '" & FILE_PATTERN & "' in" & vbLf & folder, vbExclamation
+        Exit Sub
+    End If
+
+    t0 = Timer
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.EnableEvents = False
+
+    Set logWs = GetLogSheet()
+    logRow = 2
+    Set seen = CreateObject("Scripting.Dictionary")
+
+    Set outWb = Workbooks.Add(xlWBATWorksheet)
+    Set outWs = outWb.Worksheets(1)
+    outWs.Cells.NumberFormat = "@"
+    cols = Split(OUT_COLS, "|")
+    For i = 0 To UBound(cols)
+        outWs.Cells(1, i + 1).Value = cols(i)
+    Next i
+    outRow = 2
+
+    For i = 1 To files.Count
+        Application.StatusBar = "HF NAV loader " & i & "/" & files.Count & " : " & Dir(files(i))
+        st = ProcessFile(CStr(files(i)), outWs, outRow, logWs, logRow, seen)
+        Select Case st
+            Case "PASS": nPass = nPass + 1
+            Case "WARN": nWarn = nWarn + 1
+            Case Else: nFail = nFail + 1
+        End Select
+        DoEvents
+    Next i
+
+    If Dir(folder & "\" & OUT_SUBFOLDER, vbDirectory) = "" Then MkDir folder & "\" & OUT_SUBFOLDER
+    outPath = folder & "\" & OUT_SUBFOLDER & "\" & OUT_FILE
+    outWb.SaveAs Filename:=outPath, FileFormat:=62  ' 62 = xlCSVUTF8
+    outWb.Close SaveChanges:=False
+
+    logWs.Cells(logRow + 1, 1).Value = "RUN"
+    logWs.Cells(logRow + 1, 2).Value = "build " & BUILD & " | files " & files.Count & " | PASS " & nPass & _
+        " | WARN " & nWarn & " | FAIL " & nFail & " | fund rows " & (outRow - 2) & _
+        " | " & Format$(Timer - t0, "0.0") & " s | " & outPath
+    logWs.Columns("A:J").AutoFit
+
+    Application.StatusBar = False
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+
+    MsgBox "HF NAV loader " & BUILD & vbLf & _
+           "Files: " & files.Count & "   PASS " & nPass & "   WARN " & nWarn & "   FAIL " & nFail & vbLf & _
+           "Fund rows: " & (outRow - 2) & vbLf & _
+           "CSV: " & outPath & vbLf & "Details: sheet " & LOG_SHEET, _
+           IIf(nFail > 0, vbExclamation, vbInformation)
+End Sub
+
+'------------------------------------------------------------------------------
+' One file. Returns PASS / WARN / FAIL and writes one log line.
+Private Function ProcessFile(ByVal path As String, outWs As Worksheet, ByRef outRow As Long, _
+                             logWs As Worksheet, ByRef logRow As Long, seen As Object) As String
+    Dim wb As Workbook, ws As Worksheet, msgs As String, status As String
+    Dim fileName As String, fileMonth As Date, titleMonth As Date, haveTitle As Boolean
+    Dim hdr As Long, nameCol As Long, lastCol As Long, lastRow As Long
+    Dim colOf As Object, f As Variant, layout As String
+    Dim r As Long, blanks As Long, nm As String, cph As String
+    Dim nFund As Long, nCph As Long, nNA As Long, nBad As Long, nTextNum As Long
+    Dim allEmpty As Boolean, k As Long, v As Variant, t As Double, cols As Variant
+    Dim rec() As String, rowNum As Long
+
+    t = Timer
+    status = "PASS"
+    fileName = Dir(path)
+
+    ' --- month from the file name
+    If Not ParseFileMonth(fileName, fileMonth) Then
+        ProcessFile = WriteLog(logWs, logRow, fileName, "", "", "FAIL", 0, 0, 0, 0, "file name has no '<Month> <YYYY>'", t)
+        Exit Function
+    End If
+    If seen.Exists(CStr(fileMonth)) Then
+        ProcessFile = WriteLog(logWs, logRow, fileName, IsoDate(fileMonth), "", "FAIL", 0, 0, 0, 0, _
+            "month already loaded from " & seen(CStr(fileMonth)), t)
+        Exit Function
+    End If
+
+    ' --- open read-only
+    On Error Resume Next
+    Set wb = Workbooks.Open(Filename:=path, UpdateLinks:=0, ReadOnly:=True, AddToMru:=False)
+    On Error GoTo 0
+    If wb Is Nothing Then
+        ProcessFile = WriteLog(logWs, logRow, fileName, IsoDate(fileMonth), "", "FAIL", 0, 0, 0, 0, "cannot open", t)
+        Exit Function
+    End If
+
+    On Error Resume Next
+    Set ws = wb.Worksheets("Main Report")
+    On Error GoTo 0
+    If ws Is Nothing Then
+        Set ws = wb.Worksheets(1)
+        msgs = msgs & "sheet 'Main Report' not found, used '" & ws.Name & "'; "
+        status = "WARN"
+    End If
+
+    ' --- header row = the row holding "Compliant/Breach"
+    hdr = FindRow(ws, "compliant/breach")
+    If hdr = 0 Then
+        wb.Close SaveChanges:=False
+        ProcessFile = WriteLog(logWs, logRow, fileName, IsoDate(fileMonth), "", "FAIL", 0, 0, 0, 0, "header row not found (no 'Compliant/Breach')", t)
+        Exit Function
+    End If
+    lastCol = ws.Cells(hdr, ws.Columns.Count).End(xlToLeft).Column
+    lastRow = ws.UsedRange.Row + ws.UsedRange.Rows.Count - 1
+
+    ' --- name column = the cell holding "Counterparties" above or on the header row
+    nameCol = FindColAbove(ws, hdr, lastCol, "counterparties")
+    If nameCol = 0 Then
+        nameCol = 2
+        msgs = msgs & "'Counterparties' label not found, name column assumed B; "
+        status = "WARN"
+    End If
+
+    ' --- title date vs file name
+    haveTitle = FindTitleDate(ws, hdr, nameCol, titleMonth)
+    If Not haveTitle Then
+        msgs = msgs & "title date not found, file-name month used; "
+        status = "WARN"
+    ElseIf titleMonth <> fileMonth Then
+        wb.Close SaveChanges:=False
+        ProcessFile = WriteLog(logWs, logRow, fileName, IsoDate(fileMonth), "", "FAIL", 0, 0, 0, 0, _
+            "title date " & IsoDate(titleMonth) & " <> file-name month " & IsoDate(fileMonth), t)
+        Exit Function
+    End If
+
+    ' --- map columns by banner | sub-header
+    Set colOf = CreateObject("Scripting.Dictionary")
+    MapColumns ws, hdr, nameCol, lastCol, colOf, msgs, status
+
+    For Each f In Split(REQUIRED, "|")
+        If Not colOf.Exists(CStr(f)) Then
+            wb.Close SaveChanges:=False
+            ProcessFile = WriteLog(logWs, logRow, fileName, IsoDate(fileMonth), "", "FAIL", 0, 0, 0, 0, _
+                msgs & "required column missing: " & f, t)
+            Exit Function
+        End If
+    Next f
+    layout = LayoutCode(colOf)
+    If Left$(layout, 2) = "H?" Then
+        msgs = msgs & "new layout (" & layout & "); "
+        status = "WARN"
+    End If
+
+    ' --- rows
+    cols = Split(OUT_COLS, "|")
+    ReDim rec(0 To UBound(cols))
+    cph = ""
+    blanks = 0
+    r = hdr + 1
+    Do While r <= lastRow And blanks < 15
+        nm = CleanText(ws.Cells(r, nameCol).Value)
+        If nm = "" Then
+            blanks = blanks + 1
+        Else
+            blanks = 0
+            allEmpty = True
+            For Each f In colOf.Keys
+                v = ws.Cells(r, colOf(f)).Value
+                If Not IsEmpty(v) Then
+                    If IsError(v) Then
+                        allEmpty = False
+                    ElseIf CleanText(v) <> "" Then
+                        allEmpty = False
+                    End If
+                End If
+                If Not allEmpty Then Exit For
+            Next f
+
+            If allEmpty Then
+                cph = nm                        ' CPH header row (name only, no values)
+                nCph = nCph + 1
+            Else
+                If LCase$(Left$(nm, 5)) = "total" Then
+                    msgs = msgs & "row " & r & " looks like a total ('" & nm & "'); "
+                    status = "WARN"
+                End If
+                For k = 0 To UBound(cols)
+                    rec(k) = ""
+                Next k
+                rec(0) = IsoDate(fileMonth)
+                rec(1) = fileName
+                rec(2) = layout
+                rec(3) = CStr(r)
+                rec(4) = cph
+                rec(5) = nm
+                For k = 6 To UBound(cols)
+                    If colOf.Exists(cols(k)) Then
+                        v = ws.Cells(r, colOf(cols(k))).Value
+                        If InStr(NUM_FIELDS, "|" & cols(k) & "|") > 0 Then
+                            rec(k) = NumText(v, nNA, nBad, nTextNum)
+                        ElseIf InStr(DATE_FIELDS, "|" & cols(k) & "|") > 0 Then
+                            rec(k) = DateText(v, nNA, nBad)
+                        Else
+                            If IsError(v) Then
+                                nBad = nBad + 1
+                            Else
+                                rec(k) = CleanText(v)
+                            End If
+                        End If
+                    End If
+                Next k
+                For k = 0 To UBound(cols)
+                    outWs.Cells(outRow, k + 1).Value = rec(k)
+                Next k
+                outRow = outRow + 1
+                nFund = nFund + 1
+            End If
+        End If
+        r = r + 1
+    Loop
+
+    wb.Close SaveChanges:=False
+
+    If nCph = 0 Then
+        layout = layout & "-flat"
+        msgs = msgs & "no CPH header rows (flat list): CPH_Name left blank, take it from the name map; "
+        status = "WARN"
+    End If
+    If nBad > 0 Then
+        msgs = msgs & nBad & " unreadable value(s) left blank; "
+        status = "WARN"
+    End If
+    If nTextNum > 0 Then msgs = msgs & nTextNum & " number(s) stored as text, parsed; "
+    If nFund = 0 Then
+        status = "FAIL"
+        msgs = msgs & "no fund rows read; "
+    End If
+
+    seen(CStr(fileMonth)) = fileName
+    ProcessFile = WriteLog(logWs, logRow, fileName, IsoDate(fileMonth), layout, status, nFund, nCph, nNA, nBad, msgs, t)
+End Function
+
+'------------------------------------------------------------------------------
+' Map every non-blank header cell to a field through banner | sub-header.
+' Banner = merged cell above (first cell of the merge area); when the banner row
+' is not merged (centre-across-selection), the last banner seen is carried to the
+' right until a spacer column (blank header) resets it.
+Private Sub MapColumns(ws As Worksheet, ByVal hdr As Long, ByVal nameCol As Long, ByVal lastCol As Long, _
+                       colOf As Object, ByRef msgs As String, ByRef status As String)
+    Dim c As Long, subH As String, ban As String, cur As String, cell As Range, fld As String
+
+    cur = ""
+    For c = 1 To lastCol
+        subH = Norm(ws.Cells(hdr, c).Value)
+        If c = nameCol Or subH = "" Then
+            cur = ""                                    ' spacer resets the banner
+        Else
+            ban = ""
+            If hdr > 1 Then
+                Set cell = ws.Cells(hdr - 1, c)
+                If cell.MergeCells Then
+                    ban = Norm(cell.MergeArea.Cells(1, 1).Value)
+                Else
+                    ban = Norm(cell.Value)
+                End If
+            End If
+            If ban <> "" Then cur = ban Else ban = cur
+
+            fld = MapHeader(ban, subH)
+            Select Case fld
+                Case "IGNORE"
+                    ' Total Authorization, % of NAV
+                Case ""
+                    msgs = msgs & "unknown header col " & ColLetter(c) & " '" & ban & "|" & subH & "'; "
+                    status = "WARN"
+                Case "NAV_PREV_EOY"                     ' Jan 2025: one column for both
+                    If Not colOf.Exists("NAV_Prev") Then colOf("NAV_Prev") = c
+                    If Not colOf.Exists("NAV_EoY") Then colOf("NAV_EoY") = c
+                Case Else
+                    If colOf.Exists(fld) Then
+                        msgs = msgs & "duplicate " & fld & " in col " & ColLetter(c) & " (kept " & ColLetter(colOf(fld)) & "); "
+                        status = "WARN"
+                    Else
+                        colOf(fld) = c
+                    End If
+            End Select
+        End If
+    Next c
+End Sub
+
+' banner and sub-header are already normalised (lower case, no spaces / line breaks)
+Private Function MapHeader(ByVal ban As String, ByVal subH As String) As String
+    MapHeader = ""
+    If subH Like "totalauthori*" Or subH Like "%ofnav*" Then MapHeader = "IGNORE": Exit Function
+    If subH = "rating" Then MapHeader = "Rating": Exit Function
+    If subH Like "strateg*" Then MapHeader = "Strategy": Exit Function
+    If subH Like "validity*" Then MapHeader = "ValidityDate": Exit Function
+    If subH Like "*diligence*" Then MapHeader = "LastDDDate": Exit Function
+    If subH Like "compliant*breach*" Then MapHeader = "Covenant": Exit Function
+
+    If ban Like "navchange*" Then
+        If subH Like "1month*" Then MapHeader = "NAVChg_1M"
+        If subH = "ytd" Then MapHeader = "NAVChg_YTD"
+    ElseIf ban Like "nav*" Then
+        If subH Like "endofpreviousmonth*endofyear*" Then
+            MapHeader = "NAV_PREV_EOY"
+        ElseIf subH Like "endofyear*" Then
+            MapHeader = "NAV_EoY"
+        ElseIf subH Like "endofprevious*" Then
+            MapHeader = "NAV_Prev"
+        ElseIf subH Like "endofcurrent*" Then
+            MapHeader = "NAV_Cur"
+        End If
+    ElseIf ban Like "performance*" Then
+        If subH Like "endofyear*" Then
+            MapHeader = "Perf_EoY"
+        ElseIf subH Like "monthly*" Then
+            MapHeader = "Perf_Month"
+        ElseIf subH Like "performan*ytd" Or subH = "ytd" Then
+            MapHeader = "Perf_YTD"
+        End If
+    End If
+End Function
+
+Private Function LayoutCode(colOf As Object) As String
+    Dim hasR As Boolean, hasS As Boolean, hasV As Boolean, hasD As Boolean
+    hasR = colOf.Exists("Rating"): hasS = colOf.Exists("Strategy")
+    hasV = colOf.Exists("ValidityDate"): hasD = colOf.Exists("LastDDDate")
+    If colOf("NAV_Prev") = colOf("NAV_EoY") Then
+        LayoutCode = IIf(hasR Or hasS Or hasV Or hasD, "H?1", "H1")
+    ElseIf Not (hasR Or hasS Or hasV Or hasD) Then
+        LayoutCode = "H2"
+    ElseIf hasR And hasS And hasV And hasD Then
+        LayoutCode = "H3"
+    ElseIf hasR And hasS And Not hasV And Not hasD Then
+        LayoutCode = "H4"
+    ElseIf hasR And hasS And hasD And Not hasV Then
+        LayoutCode = "H5"
+    Else
+        LayoutCode = "H?"
+    End If
+End Function
+
+'------------------------------------------------------------------------------
+' Value converters (no locale: explicit formats only)
+Private Function NumText(ByVal v As Variant, ByRef nNA As Long, ByRef nBad As Long, ByRef nTextNum As Long) As String
+    Dim t As String, neg As Boolean, pct As Boolean
+    NumText = ""
+    If IsEmpty(v) Then Exit Function
+    If IsError(v) Then nBad = nBad + 1: Exit Function
+    Select Case VarType(v)
+        Case vbDouble, vbSingle, vbCurrency, vbLong, vbInteger, vbDecimal, vbByte
+            NumText = FmtNum(CDbl(v))
+        Case vbString
+            t = UCase$(CleanText(v))
+            If t = "" Then Exit Function
+            If t = "N/A" Or t = "NA" Or t = "-" Or t = "N.A." Or t = "#N/A" Then nNA = nNA + 1: Exit Function
+            t = Replace(Replace(t, ",", ""), "$", "")
+            If Left$(t, 1) = "(" And Right$(t, 1) = ")" Then neg = True: t = Mid$(t, 2, Len(t) - 2)
+            If Right$(t, 1) = "%" Then pct = True: t = Left$(t, Len(t) - 1)
+            t = Trim$(t)
+            If t = "" Or t Like "*[!0-9.+-]*" Or (Len(t) - Len(Replace(t, ".", ""))) > 1 Then
+                nBad = nBad + 1: Exit Function
+            End If
+            Dim d As Double
+            d = Val(t)                                  ' Val always reads "." as decimal
+            If neg Then d = -d
+            If pct Then d = d / 100
+            NumText = FmtNum(d)
+            nTextNum = nTextNum + 1
+        Case Else
+            nBad = nBad + 1
+    End Select
+End Function
+
+Private Function FmtNum(ByVal d As Double) As String
+    Dim s As String
+    s = Trim$(Str$(d))                                  ' Str$ always writes "." as decimal
+    If Left$(s, 1) = "." Then s = "0" & s
+    If Left$(s, 2) = "-." Then s = "-0" & Mid$(s, 2)
+    FmtNum = s
+End Function
+
+Private Function DateText(ByVal v As Variant, ByRef nNA As Long, ByRef nBad As Long) As String
+    Dim t As String, p As Variant, m As Long, d As Long, y As Long
+    DateText = ""
+    If IsEmpty(v) Then Exit Function
+    If IsError(v) Then nBad = nBad + 1: Exit Function
+    Select Case VarType(v)
+        Case vbDate
+            DateText = IsoDate(CDate(v))
+        Case vbDouble, vbLong, vbInteger
+            If v > 20000 And v < 80000 Then DateText = IsoDate(CDate(CDbl(v))) Else nBad = nBad + 1
+        Case vbString
+            t = CleanText(v)
+            If t = "" Then Exit Function
+            If UCase$(t) = "N/A" Or UCase$(t) = "NA" Or t = "-" Then nNA = nNA + 1: Exit Function
+            p = Split(t, "/")                           ' report uses US mm/dd/yyyy
+            If UBound(p) = 2 Then
+                If IsNumeric(p(0)) And IsNumeric(p(1)) And IsNumeric(p(2)) Then
+                    m = CLng(p(0)): d = CLng(p(1)): y = CLng(p(2))
+                    If m >= 1 And m <= 12 And d >= 1 And d <= 31 And y >= 1990 And y <= 2100 Then
+                        DateText = IsoDate(DateSerial(y, m, d))
+                        Exit Function
+                    End If
+                End If
+            End If
+            nBad = nBad + 1
+        Case Else
+            nBad = nBad + 1
+    End Select
+End Function
+
+Private Function IsoDate(ByVal d As Date) As String
+    IsoDate = Year(d) & "-" & Right$("0" & Month(d), 2) & "-" & Right$("0" & Day(d), 2)
+End Function
+
+Private Function CleanText(ByVal v As Variant) As String
+    Dim s As String
+    If IsError(v) Or IsEmpty(v) Then CleanText = "": Exit Function
+    s = CStr(v)
+    s = Replace(s, Chr$(160), " ")
+    s = Replace(s, vbCr, " ")
+    s = Replace(s, vbLf, " ")
+    s = Replace(s, vbTab, " ")
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    CleanText = Trim$(s)
+End Function
+
+Private Function Norm(ByVal v As Variant) As String
+    Norm = LCase$(Replace(CleanText(v), " ", ""))
+End Function
+
+'------------------------------------------------------------------------------
+' Dates: file name and title (explicit month names, never CDate on text)
+Private Function MonthNo(ByVal tok As String) As Long
+    ' English names hard-coded: MonthName() follows the Windows language.
+    Dim full As Variant, i As Long
+    full = Array("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december")
+    tok = LCase$(Replace(tok, ".", ""))
+    If tok = "sept" Then MonthNo = 9: Exit Function
+    For i = 0 To 11
+        If tok = full(i) Or tok = Left$(full(i), 3) Then MonthNo = i + 1: Exit Function
+    Next i
+    MonthNo = 0
+End Function
+
+' "HFDB Reporting - July 2025.xlsx" -> 2025-07-31
+Private Function ParseFileMonth(ByVal fileName As String, ByRef me_ As Date) As Boolean
+    Dim base As String, toks As Variant, i As Long, m As Long
+    base = fileName
+    If InStrRev(base, ".") > 0 Then base = Left$(base, InStrRev(base, ".") - 1)
+    base = Replace(base, "-", " ")
+    toks = Split(CleanText(base), " ")
+    For i = 0 To UBound(toks) - 1
+        m = MonthNo(CStr(toks(i)))
+        If m > 0 And Len(toks(i + 1)) = 4 And IsNumeric(toks(i + 1)) Then
+            me_ = DateSerial(CLng(toks(i + 1)), m + 1, 0)
+            ParseFileMonth = True
+            Exit Function
+        End If
+    Next i
+    ParseFileMonth = False
+End Function
+
+' Title cell above the header: "Aug 31, 2026" / "August 31, 2025" / a real date.
+Private Function FindTitleDate(ws As Worksheet, ByVal hdr As Long, ByVal nameCol As Long, ByRef me_ As Date) As Boolean
+    Dim r As Long, c As Long, v As Variant, t As String, toks As Variant, i As Long, m As Long, d As Long, y As Long
+    For r = 1 To hdr
+        For c = 1 To nameCol + 1
+            v = ws.Cells(r, c).Value
+            If VarType(v) = vbDate Then
+                me_ = DateSerial(Year(v), Month(v) + 1, 0)
+                FindTitleDate = True
+                Exit Function
+            ElseIf VarType(v) = vbString Then
+                ' the title block may hold several lines in one cell: scan for <Month> <day> <yyyy>
+                t = Replace(CleanText(v), ",", " ")
+                toks = Split(CleanText(t), " ")
+                For i = 0 To UBound(toks) - 2
+                    m = MonthNo(CStr(toks(i)))
+                    If m > 0 And IsNumeric(toks(i + 1)) And Len(toks(i + 2)) = 4 And IsNumeric(toks(i + 2)) Then
+                        y = CLng(toks(i + 2))
+                        me_ = DateSerial(y, m + 1, 0)
+                        FindTitleDate = True
+                        Exit Function
+                    End If
+                Next i
+            End If
+        Next c
+    Next r
+    FindTitleDate = False
+End Function
+
+'------------------------------------------------------------------------------
+' Small helpers
+Private Function FindRow(ws As Worksheet, ByVal needleNorm As String) As Long
+    Dim r As Long, c As Long, lastR As Long, lastC As Long
+    lastR = Application.WorksheetFunction.Min(60, ws.UsedRange.Row + ws.UsedRange.Rows.Count - 1)
+    lastC = ws.UsedRange.Column + ws.UsedRange.Columns.Count - 1
+    For r = 1 To lastR
+        For c = 1 To lastC
+            If Norm(ws.Cells(r, c).Value) Like needleNorm & "*" Then FindRow = r: Exit Function
+        Next c
+    Next r
+    FindRow = 0
+End Function
+
+Private Function FindColAbove(ws As Worksheet, ByVal hdr As Long, ByVal lastCol As Long, ByVal needleNorm As String) As Long
+    Dim r As Long, c As Long
+    For r = hdr To 1 Step -1
+        For c = 1 To lastCol
+            If InStr(Norm(ws.Cells(r, c).Value), needleNorm) > 0 Then FindColAbove = c: Exit Function
+        Next c
+    Next r
+    FindColAbove = 0
+End Function
+
+Private Function ColLetter(ByVal c As Long) As String
+    ColLetter = Split(Cells(1, c).Address(True, False), "$")(0)
+End Function
+
+Private Function PickFolder() As String
+    With Application.FileDialog(4)                      ' 4 = msoFileDialogFolderPicker
+        .Title = "Folder with the HFDB Reporting files"
+        If .Show = -1 Then PickFolder = .SelectedItems(1) Else PickFolder = ""
+    End With
+End Function
+
+Private Function ListFiles(ByVal folder As String) As Collection
+    Dim col As New Collection, f As String
+    f = Dir(folder & "\" & FILE_PATTERN)
+    Do While f <> ""
+        If Left$(f, 2) <> "~$" Then col.Add folder & "\" & f
+        f = Dir()
+    Loop
+    Set ListFiles = col
+End Function
+
+Private Function GetLogSheet() As Worksheet
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(LOG_SHEET)
+    On Error GoTo 0
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        ws.Name = LOG_SHEET
+    End If
+    ws.Cells.Clear
+    ws.Range("A1:J1").Value = Array("File", "MonthEnd", "Layout", "Status", "FundRows", "CPHRows", "NA", "Unreadable", "Seconds", "Messages")
+    ws.Range("A1:J1").Font.Bold = True
+    Set GetLogSheet = ws
+End Function
+
+Private Function WriteLog(logWs As Worksheet, ByRef logRow As Long, ByVal fileName As String, ByVal monthEnd As String, _
+                          ByVal layout As String, ByVal status As String, ByVal nFund As Long, ByVal nCph As Long, _
+                          ByVal nNA As Long, ByVal nBad As Long, ByVal msgs As String, ByVal t As Double) As String
+    logWs.Cells(logRow, 1).Value = fileName
+    logWs.Cells(logRow, 2).NumberFormat = "@"
+    logWs.Cells(logRow, 2).Value = monthEnd
+    logWs.Cells(logRow, 3).Value = layout
+    logWs.Cells(logRow, 4).Value = status
+    logWs.Cells(logRow, 5).Value = nFund
+    logWs.Cells(logRow, 6).Value = nCph
+    logWs.Cells(logRow, 7).Value = nNA
+    logWs.Cells(logRow, 8).Value = nBad
+    logWs.Cells(logRow, 9).Value = Round(Timer - t, 1)
+    logWs.Cells(logRow, 10).Value = msgs
+    Select Case status
+        Case "FAIL": logWs.Cells(logRow, 4).Interior.Color = RGB(244, 199, 195)
+        Case "WARN": logWs.Cells(logRow, 4).Interior.Color = RGB(252, 232, 178)
+        Case Else: logWs.Cells(logRow, 4).Interior.Color = RGB(204, 236, 214)
+    End Select
+    logRow = logRow + 1
+    WriteLog = status
+End Function
