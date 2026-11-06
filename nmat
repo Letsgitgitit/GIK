@@ -1,0 +1,136 @@
+DEFINE
+    VAR _hfNames =
+        DATATABLE(
+            "ReportName", STRING,
+            {
+                { "ALPHADYNE DIVERSIFIED STRATEGIES MASTER FUND LTD" },
+                { "ALPHADYNE GLOBAL RATES MASTER FUND LTD" },
+                { "ALPHADYNE INTERNATIONAL MASTER FUND LTD" },
+                { "ALPHADYNE INTERNATIONAL ERISA MASTER FUND LTD" },
+                { "ATLAS MACRO MASTER FUND LTD" },
+                { "BALDR BAYES FUND INC" },
+                { "BLACKROCK SYSTEMATIC TOTAL ALPHA RESTRICTED MASTER FUND LTD" },
+                { "BLACKROCK ABSOLUTE MACRO MASTER FUND LTD" },
+                { "BLACKROCK FIXED INCOME GLOBAL ALPHA MASTER FUND LTD" },
+                { "BLACKROCK SYSTEMATIC MULTI STRATEGY ALPHA MASTER FUND LTD" },
+                { "BLACKROCK SYSTEMATIC TOTAL ALPHA MASTER FUND LTD" },
+                { "EMERGING MARKETS ALPHA MASTER FUND LTD" },
+                { "GLOBAL ALPHA OPPORTUNITIES MASTER FUND LTD" },
+                { "MACRO FACTOR MASTER FUND LTD AGGREGATE" },
+                { "MARKET ADVANTAGE LTD" },
+                { "OBSIDIAN RELATIVE VALUE STRATEGY MASTER FUND" },
+                { "STYLE ADVANTAGE LTD" },
+                { "THE 32 CAPITAL MASTER FUND SPC LTD" },
+                { "CAPSTONE ALTERNATIVE RISK STRATEGY MASTER CAYMAN LP" },
+                { "CAPSTONE GLOBAL MASTER CAYMAN LIMITED" },
+                { "CENTIVA MASTER FUND LP" },
+                { "CITADEL CLEARING LLC" },
+                { "CITADEL GLOBAL FIXED INCOME MASTER FUND II LTD GFL2" },
+                { "CITADEL GLOBAL FIXED INCOME MASTER FUND LTD" },
+                { "CITADEL SECURITIES EUROPE LIMITED" },
+                { "CITADEL SECURITIES FINANCIAL TRADING IRELAND DESIGNATED ACTIVITY COMPANY" },
+                { "CITADEL SECURITIES GCS IRELAND LIMITED" },
+                { "CITADEL SECURITIES LLC" },
+                { "CITADEL SECURITIES PRINCIPAL STRATEGIES LLC" },
+                { "CWSI II LLC" },
+                { "DRW INVESTMENTS LLC" },
+                { "ELEMENT CAPITAL MASTER FUND LIMITED" },
+                { "EXODUSPOINT PARTNERS MASTER FUND LP" },
+                { "GARDA FIRV OPPORTUNITY MASTER FUND LTD" },
+                { "RHINEGOLD LTD" },
+                { "CONCORDIA G10 FIXED INCOME RELATIVE VALUE FUND LP" },
+                { "CONCORDIA INSTITUTIONAL MULTI STRATEGY LTD" },
+                { "MARINER ALTERNATIVE RELATIVE VALUE MASTER FUND LP" },
+                { "MARINER ATLANTIC MULTI STRATEGY MASTER FUND LTD" },
+                { "MILLENNIUM FIXED INCOME LTD" },
+                { "MILLENNIUM PARTNERS LP" },
+                { "NISA CONFLUENCE MASTER FUND LP" },
+                { "PGIM FIXED INCOME EMERGING MARKETS LONG SHORT MASTER FUND LTD" },
+                { "PGIM FIXED INCOME GLOBAL LIQUIDITY RELATIVE VALUE MASTER FUND LTD" },
+                { "PGIM FIXED INCOME US LIQUIDITY RELATIVE VALUE MASTER FUND LTD" },
+                { "POINT72 ASSOCIATES LLC" },
+                { "POINT72 GLOBAL MACRO INVESTMENTS LLC" },
+                { "POINT72 STRATEGIC INVESTMENTS LLC" },
+                { "TUDOR BVI GLOBAL FUND" },
+                { "TUDOR FAMILY FUND II LLC" },
+                { "TUDOR GLOBAL FUND LP" },
+                { "TUDOR TRADING I LP" },
+                { "TUDOR TRADING VII LP" },
+                { "VERITION MULTI STRATEGY MASTER FUND LTD" },
+                { "JANE STREET" }
+            }
+        )
+    VAR _hfDim =
+        ADDCOLUMNS(
+            SELECTCOLUMNS(
+                FILTER( ALL( DIM_COUNTERPARTY ), LEN( DIM_COUNTERPARTY[Name] ) > 0 ),
+                "Id", DIM_COUNTERPARTY[HeadOfficeSirisId],
+                "DimName", DIM_COUNTERPARTY[Name],
+                "CPH_Id", DIM_COUNTERPARTY[CPH_Id],
+                "CPH_Name", DIM_COUNTERPARTY[CPH_Name],
+                "InCORTEX", DIM_COUNTERPARTY[InCORTEX]
+            ),
+            "Key",
+                SUBSTITUTE( SUBSTITUTE( SUBSTITUTE( SUBSTITUTE( SUBSTITUTE( SUBSTITUTE(
+                    UPPER( TRIM( [DimName] ) ) & " ", " LIMITED ", " LTD " ),
+                    ".", "" ), ",", "" ), "'", "" ), "-", "" ), " ", "" )
+        )
+    VAR _hfKeyed =
+        ADDCOLUMNS(
+            _hfNames,
+            "RKey",
+                SUBSTITUTE( SUBSTITUTE( SUBSTITUTE( SUBSTITUTE( SUBSTITUTE( SUBSTITUTE(
+                    UPPER( TRIM( [ReportName] ) ) & " ", " LIMITED ", " LTD " ),
+                    ".", "" ), ",", "" ), "'", "" ), "-", "" ), " ", "" )
+        )
+    VAR _hfCand =
+        GENERATEALL(
+            _hfKeyed,
+            VAR k = [RKey]
+            VAR p20 = LEFT( k, 20 )
+            VAR p15 = LEFT( k, 15 )
+            VAR exact = FILTER( _hfDim, [Key] = k )
+            VAR nE = COUNTROWS( exact )
+            VAR pref = FILTER( _hfDim, nE = 0 && LEFT( [Key], 20 ) = p20 )
+            VAR nP = COUNTROWS( pref )
+            VAR cont = FILTER( _hfDim, nE = 0 && nP = 0 && CONTAINSSTRING( [Key], p15 ) )
+            VAR allC =
+                UNION(
+                    ADDCOLUMNS( exact, "Match", "1 exact" ),
+                    ADDCOLUMNS( pref, "Match", "2 prefix20" ),
+                    ADDCOLUMNS( cont, "Match", "3 contains15" )
+                )
+            RETURN
+                ADDCOLUMNS(
+                    TOPN( 5, allC, [InCORTEX], DESC, [Id], ASC ),
+                    "Candidates", COUNTROWS( allC )
+                )
+        )
+
+// ---- M1 candidates -----------------------------------------------------------------------
+EVALUATE
+    SELECTCOLUMNS(
+        _hfCand,
+        "ReportName", [ReportName],
+        "Match", [Match],
+        "Candidates", [Candidates],
+        "HeadOfficeSirisId", [Id],
+        "DimName", [DimName],
+        "CPH_Id", [CPH_Id],
+        "CPH_Name", [CPH_Name],
+        "InCORTEX", [InCORTEX]
+    )
+    ORDER BY [ReportName], [Match], [InCORTEX] DESC
+
+// ---- M2 summary per report name ------------------------------------------------------------
+EVALUATE
+    ADDCOLUMNS(
+        _hfNames,
+        "BestMatch",
+            VAR n = [ReportName]
+            RETURN MINX( FILTER( _hfCand, [ReportName] = n ), [Match] ),
+        "Candidates",
+            VAR n = [ReportName]
+            RETURN MAXX( FILTER( _hfCand, [ReportName] = n ), [Candidates] )
+    )
+    ORDER BY [BestMatch] DESC, [ReportName]
