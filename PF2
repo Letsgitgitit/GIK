@@ -1,0 +1,130 @@
+// =====================================================================================
+// P6A_PREFLIGHT_2.dax  -  BUILD 2026-11-06a  -  read-only follow-up to P6A_PREFLIGHT (run 6 Nov, data 4 Nov 2026)
+// Five result tabs:
+//   Q1  NAV-report ids that are not in DIM_COUNTERPARTY (S5 / PF-01 showed 2, from Oct 2025)
+//   Q2  NAV-report funds the name map does not cover (2-4 per month) and "no entity" funds (PF-01 showed none)
+//   Q3  P6W Rating Map: every Rating_ssj value, its bucket, ALLREPO rows on all dates (finds the 1 "Unmapped")
+//   Q4  DIM_PRODUCTLINE families vs P6W SACCR (PF-07a: one family got no factor)
+//   Q5  Envelopes held OUTSIDE the HF scope whose members are IN it (PF-09), with the envelope's 16A util / limit
+//   Q6  Scope 16A util and limit with and without those envelopes (sizes the decision)
+// =====================================================================================
+
+DEFINE
+    VAR _rLast16 = CALCULATE ( MAX ( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS () )
+    VAR _rScope =
+        CALCULATETABLE ( VALUES ( DIM_COUNTERPARTY[HeadOfficeSirisId] ), REMOVEFILTERS (),
+            DIM_COUNTERPARTY[HF Scope] = "Hedge fund" )
+    VAR _rEnvRows =
+        CALCULATETABLE (
+            SUMMARIZE ( FACT_LIMIT_16A, FACT_LIMIT_16A[EnvelopeHolderId], FACT_LIMIT_16A[AuthorisationId],
+                FACT_LIMIT_16A[HeadOfficeSirisId] ),
+            REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] = _rLast16, FACT_LIMIT_16A[StructureType] = "Envelope",
+            TREATAS ( _rScope, FACT_LIMIT_16A[HeadOfficeSirisId] ) )
+    VAR _rOut = FILTER ( _rEnvRows, NOT FACT_LIMIT_16A[EnvelopeHolderId] IN _rScope )
+
+// ---- Q1 NAV ids not in DIM_COUNTERPARTY -------------------------------------------------------------------
+EVALUATE
+    VAR qMissing =
+        EXCEPT (
+            CALCULATETABLE ( DISTINCT ( FACT_HF_NAV[HeadOfficeSirisId] ), REMOVEFILTERS (),
+                NOT ISBLANK ( FACT_HF_NAV[HeadOfficeSirisId] ) ),
+            CALCULATETABLE ( DISTINCT ( DIM_COUNTERPARTY[HeadOfficeSirisId] ), REMOVEFILTERS () ) )
+    RETURN
+        CALCULATETABLE (
+            ADDCOLUMNS (
+                SUMMARIZE ( FACT_HF_NAV, FACT_HF_NAV[HeadOfficeSirisId], FACT_HF_NAV[Fund_Name], FACT_HF_NAV[CPH_Name] ),
+                "Months", CALCULATE ( DISTINCTCOUNT ( FACT_HF_NAV[MonthEnd] ) ),
+                "First", CALCULATE ( MIN ( FACT_HF_NAV[MonthEnd] ) ),
+                "Last", CALCULATE ( MAX ( FACT_HF_NAV[MonthEnd] ) ) ),
+            REMOVEFILTERS (), TREATAS ( qMissing, FACT_HF_NAV[HeadOfficeSirisId] ) )
+
+// ---- Q2 unmapped and no-entity funds ----------------------------------------------------------------------
+EVALUATE
+    CALCULATETABLE (
+        ADDCOLUMNS (
+            SUMMARIZE ( FACT_HF_NAV, FACT_HF_NAV[MapStatus], FACT_HF_NAV[Fund_Name], FACT_HF_NAV[CPH_Name] ),
+            "Months", CALCULATE ( DISTINCTCOUNT ( FACT_HF_NAV[MonthEnd] ) ),
+            "First", CALCULATE ( MIN ( FACT_HF_NAV[MonthEnd] ) ),
+            "Last", CALCULATE ( MAX ( FACT_HF_NAV[MonthEnd] ) ),
+            "NAV_Cur_Last_USDm",
+                VAR qL = CALCULATE ( MAX ( FACT_HF_NAV[MonthEnd] ) )
+                RETURN CALCULATE ( SUM ( FACT_HF_NAV[NAV_Cur] ), FACT_HF_NAV[MonthEnd] = qL ) ),
+        REMOVEFILTERS (), FACT_HF_NAV[MapStatus] <> "mapped" )
+    ORDER BY FACT_HF_NAV[MapStatus], FACT_HF_NAV[Fund_Name]
+
+// ---- Q3 rating map with row counts ------------------------------------------------------------------------
+EVALUATE
+    ADDCOLUMNS (
+        'P6W Rating Map',
+        "RowsAllDates",
+            VAR qR = 'P6W Rating Map'[Rating_ssj]
+            RETURN CALCULATE ( COUNTROWS ( FACT_ALLREPO ), REMOVEFILTERS (), FACT_ALLREPO[Rating_ssj] = qR ) + 0,
+        "Rows07L_S_LastDate",
+            VAR qR = 'P6W Rating Map'[Rating_ssj]
+            VAR qD = CALCULATE ( MAX ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS () )
+            RETURN CALCULATE ( COUNTROWS ( FACT_ALLREPO ), REMOVEFILTERS (), FACT_ALLREPO[Rating_ssj] = qR,
+                FACT_ALLREPO[SnapshotDate] = qD, FACT_ALLREPO[SLA_CateCode] = "07L", FACT_ALLREPO[BuySell] = "S" ) + 0
+    )
+    ORDER BY 'P6W Rating Map'[Bucket Order], 'P6W Rating Map'[Rating_ssj]
+
+// ---- Q4 families vs SA-CCR table --------------------------------------------------------------------------
+EVALUATE
+    ADDCOLUMNS (
+        SUMMARIZE ( DIM_PRODUCTLINE, DIM_PRODUCTLINE[Family] ),
+        "Groups", CALCULATE ( CONCATENATEX ( VALUES ( DIM_PRODUCTLINE[ProductLineGroupName] ),
+                      DIM_PRODUCTLINE[ProductLineGroupName], " | " ) ),
+        "InSACCR", VAR qF = DIM_PRODUCTLINE[Family]
+                   RETURN COUNTROWS ( FILTER ( 'P6W SACCR', 'P6W SACCR'[Family] = qF ) ) > 0,
+        "FamilyLength", LEN ( DIM_PRODUCTLINE[Family] )
+    )
+
+// ---- Q5 envelopes held outside the scope with members inside ------------------------------------------------
+EVALUATE
+    ADDCOLUMNS (
+        SUMMARIZE ( _rOut, FACT_LIMIT_16A[EnvelopeHolderId] ),
+        "Holder", LOOKUPVALUE ( DIM_COUNTERPARTY[Name], DIM_COUNTERPARTY[HeadOfficeSirisId], FACT_LIMIT_16A[EnvelopeHolderId] ),
+        "HolderCPH", LOOKUPVALUE ( DIM_COUNTERPARTY[CPH_Label], DIM_COUNTERPARTY[HeadOfficeSirisId], FACT_LIMIT_16A[EnvelopeHolderId] ),
+        "HolderSector", LOOKUPVALUE ( DIM_COUNTERPARTY[Sector], DIM_COUNTERPARTY[HeadOfficeSirisId], FACT_LIMIT_16A[EnvelopeHolderId] ),
+        "MembersInScope",
+            VAR qH = FACT_LIMIT_16A[EnvelopeHolderId]
+            RETURN COUNTROWS ( DISTINCT ( SELECTCOLUMNS ( FILTER ( _rOut, FACT_LIMIT_16A[EnvelopeHolderId] = qH ),
+                "I", FACT_LIMIT_16A[HeadOfficeSirisId] ) ) ),
+        "MembersAll",
+            VAR qH = FACT_LIMIT_16A[EnvelopeHolderId]
+            RETURN CALCULATE ( DISTINCTCOUNT ( FACT_LIMIT_16A[HeadOfficeSirisId] ), REMOVEFILTERS (),
+                FACT_LIMIT_16A[SnapshotDate] = _rLast16, FACT_LIMIT_16A[EnvelopeHolderId] = qH ),
+        "EnvUtil",
+            VAR qH = FACT_LIMIT_16A[EnvelopeHolderId]
+            RETURN CALCULATE ( SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[Utilisation] ) ) ),
+                REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] = _rLast16, FACT_LIMIT_16A[EnvelopeHolderId] = qH,
+                NOT ISBLANK ( FACT_LIMIT_16A[AuthorisationId] ) ),
+        "EnvLimit",
+            VAR qH = FACT_LIMIT_16A[EnvelopeHolderId]
+            RETURN CALCULATE ( SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[Amount] ) ) ),
+                REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] = _rLast16, FACT_LIMIT_16A[EnvelopeHolderId] = qH,
+                NOT ISBLANK ( FACT_LIMIT_16A[AuthorisationId] ) )
+    )
+    ORDER BY [EnvUtil] DESC
+
+// ---- Q6 scope 16A with and without envelopes held outside ----------------------------------------------------
+EVALUATE
+    VAR qAuthAll =
+        CALCULATETABLE ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), REMOVEFILTERS (),
+            FACT_LIMIT_16A[SnapshotDate] = _rLast16, NOT ISBLANK ( FACT_LIMIT_16A[AuthorisationId] ),
+            TREATAS ( _rScope, FACT_LIMIT_16A[HeadOfficeSirisId] ) )
+    VAR qAuthOut = DISTINCT ( SELECTCOLUMNS ( _rOut, "A", FACT_LIMIT_16A[AuthorisationId] ) )
+    VAR qAuthKeep = EXCEPT ( qAuthAll, qAuthOut )
+    RETURN
+        ROW (
+            "AsOf", _rLast16,
+            "Auths_All", COUNTROWS ( qAuthAll ),
+            "Auths_OutsideEnvelopes", COUNTROWS ( qAuthOut ),
+            "Util_All", CALCULATE ( SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[Utilisation] ) ) ),
+                REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] = _rLast16, TREATAS ( qAuthAll, FACT_LIMIT_16A[AuthorisationId] ) ),
+            "Limit_All", CALCULATE ( SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[Amount] ) ) ),
+                REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] = _rLast16, TREATAS ( qAuthAll, FACT_LIMIT_16A[AuthorisationId] ) ),
+            "Util_ExOutside", CALCULATE ( SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[Utilisation] ) ) ),
+                REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] = _rLast16, TREATAS ( qAuthKeep, FACT_LIMIT_16A[AuthorisationId] ) ),
+            "Limit_ExOutside", CALCULATE ( SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[Amount] ) ) ),
+                REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] = _rLast16, TREATAS ( qAuthKeep, FACT_LIMIT_16A[AuthorisationId] ) )
+        )
