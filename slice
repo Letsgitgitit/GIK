@@ -1,0 +1,10 @@
+P6W N Metric =
+DATATABLE (
+    "Metric", STRING,
+    "Order", INTEGER,
+    { { "16A", 1 }, { "06", 2 }, { "17A", 3 }, { "17B", 4 }, { "Repo", 5 } }
+)
+
+
+
+
