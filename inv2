@@ -217,3 +217,76 @@ EVALUATE
             TREATAS( _p6HfIds, FACT_LIMIT_06[HeadOfficeSirisId] ), FACT_LIMIT_06[Available] < 0 )
     )
     ORDER BY [Rows] DESC
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+DEFINE
+    VAR _cLast16 = CALCULATE( MAX( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS() )
+    VAR _cLastRp = CALCULATE( MAX( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS() )
+    VAR _cHfIds =
+        CALCULATETABLE( VALUES( FACT_LIMIT_16A[HeadOfficeSirisId] ), REMOVEFILTERS(),
+            FACT_LIMIT_16A[SnapshotDate] = _cLast16, FACT_LIMIT_16A[Sector] = "Hedge Fund" )
+
+// ---- C1 ALLREPO direction ------------------------------------------------------------------
+EVALUATE
+    SUMMARIZECOLUMNS(
+        FACT_ALLREPO[BuySell],
+        FACT_ALLREPO[InstLabel],
+        FACT_ALLREPO[ProductType],
+        FACT_ALLREPO[SLA_CateCode],
+        TREATAS( { _cLastRp }, FACT_ALLREPO[SnapshotDate] ),
+        TREATAS( _cHfIds, FACT_ALLREPO[HeadOfficeSirisId] ),
+        "Rows", COUNTROWS( FACT_ALLREPO ),
+        "Trades", DISTINCTCOUNT( FACT_ALLREPO[TransactionId] ),
+        "CPYs", DISTINCTCOUNT( FACT_ALLREPO[HeadOfficeSirisId] ),
+        "CashAmount_EUR", SUM( FACT_ALLREPO[CashAmount_EUR] ),
+        "NotionalBond_EUR", SUM( FACT_ALLREPO[NotionalBond_EUR] ),
+        "RiskNet_EUR", SUM( FACT_ALLREPO[RiskNet_EUR] ),
+        "HaircutNonZeroRows", CALCULATE( COUNTROWS( FACT_ALLREPO ), FACT_ALLREPO[Haircut] <> 0 ),
+        "MaxCashOneTrade_EUR", MAX( FACT_ALLREPO[CashAmount_EUR] )
+    )
+    ORDER BY FACT_ALLREPO[BuySell], [CashAmount_EUR] DESC
+
+// ---- C2 maturity profile of live HF deals (FACT_SALES) ---------------------------------------
+EVALUATE
+    VAR live =
+        CALCULATETABLE(
+            FACT_SALES,
+            REMOVEFILTERS(),
+            TREATAS( _cHfIds, FACT_SALES[RicosCode] ),
+            FACT_SALES[MaturityDate] > _cLast16,
+            FACT_SALES[MaturityDate] < DATE( 2099, 1, 1 ),
+            FACT_SALES[IsRebooked] = FALSE ()
+        )
+    VAR tagged =
+        ADDCOLUMNS(
+            live,
+            "@Bucket",
+                VAR yrs = ( FACT_SALES[MaturityDate] - _cLast16 ) / 365.25
+                RETURN SWITCH( TRUE (), yrs <= 1, "1 0-1Y", yrs <= 3, "2 1-3Y", yrs <= 5, "3 3-5Y", yrs <= 10, "4 5-10Y", "5 10Y+" )
+        )
+    RETURN
+        GROUPBY(
+            tagged,
+            FACT_SALES[ProductLineGroupName],
+            [@Bucket],
+            "Deals", COUNTX( CURRENTGROUP(), 1 ),
+            "Notional_EUR", SUMX( CURRENTGROUP(), ABS( FACT_SALES[NominalAmountEUR] ) ),
+            "OldestDeal", MINX( CURRENTGROUP(), FACT_SALES[DealDate] )
+        )
+    ORDER BY FACT_SALES[ProductLineGroupName], [@Bucket]
