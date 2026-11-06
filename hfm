@@ -4,7 +4,7 @@ Private Const FILE_PATTERN As String = "HFDB Reporting - *.xls*"
 Private Const OUT_SUBFOLDER As String = "_hfnav_out"
 Private Const OUT_FILE As String = "HF_NAV_LONG.csv"
 Private Const LOG_SHEET As String = "HFNAV_LOG"
-Private Const BUILD As String = "2026-11-05a"
+Private Const BUILD As String = "2026-11-05b"
 
 ' Output columns (order = CSV order)
 Private Const OUT_COLS As String = "MonthEnd|SourceFile|Layout|SourceRow|CPH_Name|Fund_Name|Rating|Strategy|ValidityDate|LastDDDate|NAV_EoY|NAV_Prev|NAV_Cur|Perf_EoY|Perf_Month|Perf_YTD|NAVChg_1M|NAVChg_YTD|Covenant"
@@ -95,6 +95,8 @@ Private Function ProcessFile(ByVal path As String, outWs As Worksheet, ByRef out
     Dim nFund As Long, nCph As Long, nNA As Long, nBad As Long, nTextNum As Long
     Dim allEmpty As Boolean, k As Long, v As Variant, t As Double, cols As Variant
     Dim rec() As String, rowNum As Long
+    Dim seenFund As Object, key As String, oldRow As Long, same As Boolean
+    Dim nDupSame As Long, nDupDiff As Long, nNoCph As Long, firstOut As Long
 
     t = Timer
     status = "PASS"
@@ -180,6 +182,8 @@ Private Function ProcessFile(ByVal path As String, outWs As Worksheet, ByRef out
     ' --- rows
     cols = Split(OUT_COLS, "|")
     ReDim rec(0 To UBound(cols))
+    Set seenFund = CreateObject("Scripting.Dictionary")
+    firstOut = outRow
     cph = ""
     blanks = 0
     r = hdr + 1
@@ -235,11 +239,34 @@ Private Function ProcessFile(ByVal path As String, outWs As Worksheet, ByRef out
                         End If
                     End If
                 Next k
-                For k = 0 To UBound(cols)
-                    outWs.Cells(outRow, k + 1).Value = rec(k)
-                Next k
-                outRow = outRow + 1
-                nFund = nFund + 1
+                key = UCase$(nm)
+                If seenFund.Exists(key) Then
+                    oldRow = seenFund(key)
+                    same = True
+                    For k = 6 To UBound(cols)
+                        If CStr(outWs.Cells(oldRow, k + 1).Value) <> rec(k) Then same = False: Exit For
+                    Next k
+                    If same Then
+                        If CStr(outWs.Cells(oldRow, 5).Value) = "" And rec(4) <> "" Then
+                            outWs.Cells(oldRow, 5).Value = rec(4)
+                            outWs.Cells(oldRow, 4).Value = CStr(outWs.Cells(oldRow, 4).Value) & "+" & rec(3)
+                        End If
+                        nDupSame = nDupSame + 1
+                    Else
+                        nDupDiff = nDupDiff + 1
+                        msgs = msgs & "'" & nm & "' twice with different values (rows " & outWs.Cells(oldRow, 4).Value & ", " & r & "), both kept; "
+                        status = "WARN"
+                    End If
+                End If
+                If Not (seenFund.Exists(key) And same) Then
+                    If Not seenFund.Exists(key) Then seenFund(key) = outRow
+                    For k = 0 To UBound(cols)
+                        outWs.Cells(outRow, k + 1).Value = rec(k)
+                    Next k
+                    outRow = outRow + 1
+                    nFund = nFund + 1
+                End If
+                same = False
             End If
         End If
         r = r + 1
@@ -247,6 +274,14 @@ Private Function ProcessFile(ByVal path As String, outWs As Worksheet, ByRef out
 
     wb.Close SaveChanges:=False
 
+    For k = firstOut To outRow - 1
+        If CStr(outWs.Cells(k, 5).Value) = "" Then nNoCph = nNoCph + 1
+    Next k
+    If nDupSame > 0 Then msgs = msgs & nDupSame & " duplicate fund row(s) merged; "
+    If nNoCph > 0 And nCph > 0 Then
+        msgs = msgs & nNoCph & " fund row(s) without a CPH header above them: CPH from the name map; "
+        status = IIf(status = "FAIL", "FAIL", "WARN")
+    End If
     If nCph = 0 Then
         layout = layout & "-flat"
         msgs = msgs & "no CPH header rows (flat list): CPH_Name left blank, take it from the name map; "
