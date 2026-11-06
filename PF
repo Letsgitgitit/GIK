@@ -1,0 +1,475 @@
+// =====================================================================================
+// P6A_PREFLIGHT.dax  -  BUILD 2026-11-06a  -  read-only, changes nothing.
+// Contract: P6A_LAYOUT_AND_CONTRACT.md v1.1, Part C. Run AFTER P6W_SETUP.dax (S0–S5 passed).
+//
+// HOW TO RUN: DAX Studio (preferred: Server Timings on, for the PF-06 / PF-07 timings) or Desktop DAX query view.
+// Paste all, Run. One result tab per EVALUATE, in this order:
+//   PF-00  schema: every column the P6 measures will read, found or not (+ its type)
+//   PF-01  FACT_HF_NAV per month: rows, funds, mapped / no entity / unmapped, ids not in DIM_COUNTERPARTY
+//   PF-02a HF Scope by rule (NAV report / Sector / MCG41 / 16A Sector on the last date): CPYs, CPHs, 16A util + limit
+//   PF-02b NAV-report entities that are NOT Sector "Hedge Fund", and 16A Sector-HF CPYs that fall outside HF Scope
+//   PF-03  EUR/USD candidates: tables and columns with "FX" or "USD" in the name
+//   PF-04a 17A / 17B on RECONC total lines, by category × booking centre, Sector-HF ids vs full scope
+//   PF-04b P1 / CORTEX measure names the P6 script will call (so step 6 uses the live names)
+//   PF-05a ALLREPO 07L on the last date, by Sponsored × BuySell: cash, face, RiskNet, haircut forms, weighted haircut
+//   PF-05b S side (17B, collateral received), ex-Sponsored, by rating bucket: face, rows, issuers; unmapped ratings
+//   PF-06  R over time: S-side face by month-end × rating bucket since 2023 (note the time)
+//   PF-07a Live HF deals (FACT_SALES) by maturity bucket × family: notional, deals, SA-CCR proxy (note the time)
+//   PF-07b PF-07 total proxy vs scope 16A util (order of magnitude only)
+//   PF-08  As-of table and compare dates (1D / 1W / 1M) per fact on the latest date
+//   PF-09  Envelopes crossing the scope boundary (holder or member outside the scope; envelope spanning 2+ CPHs)
+//   PF-10  FACT_LIMIT_16A[Rating] values in scope (for the rating order table)
+// PF-11 (visual timings) runs at step 6, once the measures exist.
+// If one block errors, the whole run stops: comment that EVALUATE out (select > Ctrl+/) and flag the message.
+// Scope = DIM_COUNTERPARTY[HF Scope] = "Hedge fund" (P6W_SETUP S2).
+// =====================================================================================
+
+DEFINE
+    VAR _pLast16 = CALCULATE ( MAX ( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS () )
+    VAR _pLast06 = CALCULATE ( MAX ( FACT_LIMIT_06[SnapshotDate] ), REMOVEFILTERS () )
+    VAR _pLastRc = CALCULATE ( MAX ( FACT_RECONC[SnapshotDate] ), REMOVEFILTERS () )
+    VAR _pLastRp = CALCULATE ( MAX ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS () )
+    VAR _pScope =
+        CALCULATETABLE ( VALUES ( DIM_COUNTERPARTY[HeadOfficeSirisId] ), REMOVEFILTERS (),
+            DIM_COUNTERPARTY[HF Scope] = "Hedge fund" )
+    VAR _pSectorIds =
+        CALCULATETABLE ( VALUES ( FACT_LIMIT_16A[HeadOfficeSirisId] ), REMOVEFILTERS (),
+            FACT_LIMIT_16A[SnapshotDate] = _pLast16, FACT_LIMIT_16A[Sector] = "Hedge Fund" )
+    VAR _pNavIds =
+        CALCULATETABLE ( DISTINCT ( FACT_HF_NAV[HeadOfficeSirisId] ), REMOVEFILTERS (),
+            NOT ISBLANK ( FACT_HF_NAV[HeadOfficeSirisId] ) )
+    VAR _pNotSponsored =
+        FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) )
+
+// ---- PF-00 schema ------------------------------------------------------------------------------------------
+EVALUATE
+    VAR qCols =
+        SELECTCOLUMNS ( INFO.VIEW.COLUMNS (), "T", [Table], "C", [Name], "DT", [DataType] )
+    VAR qNeed =
+        DATATABLE (
+            "Table", STRING, "Column", STRING, "UsedBy", STRING,
+            {
+                { "FACT_HF_NAV", "MonthEnd", "K5 M N V R3" }, { "FACT_HF_NAV", "HeadOfficeSirisId", "all NAV" },
+                { "FACT_HF_NAV", "Fund_Name", "V" }, { "FACT_HF_NAV", "CPH_Name", "N" },
+                { "FACT_HF_NAV", "NAV_Cur", "N M" }, { "FACT_HF_NAV", "NAVChg_1M", "K5 M V R3" },
+                { "FACT_HF_NAV", "NAVChg_YTD", "M N" }, { "FACT_HF_NAV", "Covenant", "M V" },
+                { "FACT_HF_NAV", "ValidityDate", "V" }, { "FACT_HF_NAV", "LastDDDate", "V" },
+                { "FACT_HF_NAV", "StrategyLatest", "A2" }, { "FACT_HF_NAV", "MapStatus", "PF-01" },
+                { "DIM_COUNTERPARTY", "HeadOfficeSirisId", "all" }, { "DIM_COUNTERPARTY", "Name", "M V" },
+                { "DIM_COUNTERPARTY", "Sector", "A3" }, { "DIM_COUNTERPARTY", "MCG_Code", "A3" },
+                { "DIM_COUNTERPARTY", "CPH_Id", "K3 M N C1" }, { "DIM_COUNTERPARTY", "CPH_Label", "M N C1" },
+                { "DIM_COUNTERPARTY", "HF Scope", "A1" }, { "DIM_COUNTERPARTY", "HF Strategy", "A2" },
+                { "FACT_LIMIT_16A", "SnapshotDate", "all 16A" }, { "FACT_LIMIT_16A", "HeadOfficeSirisId", "all 16A" },
+                { "FACT_LIMIT_16A", "AuthorisationId", "grain" }, { "FACT_LIMIT_16A", "Amount", "K1 K2 C1 T" },
+                { "FACT_LIMIT_16A", "Utilisation", "K1 K2 C1 T M" }, { "FACT_LIMIT_16A", "Rating", "M" },
+                { "FACT_LIMIT_16A", "Sector", "PF-02" }, { "FACT_LIMIT_16A", "StructureType", "PF-09" },
+                { "FACT_LIMIT_16A", "EnvelopeHolderId", "PF-09" },
+                { "FACT_LIMIT_06", "SnapshotDate", "M" }, { "FACT_LIMIT_06", "Comment", "M 06 status" },
+                { "FACT_LIMIT_06", "AuthorisationId", "M" }, { "FACT_LIMIT_06", "Utilisation", "M" },
+                { "FACT_LIMIT_06", "Amount", "M" },
+                { "FACT_RECONC", "SnapshotDate", "K6 M" }, { "FACT_RECONC", "IsEnvelopeTotal", "K6 M" },
+                { "FACT_RECONC", "Category", "K6 M" }, { "FACT_RECONC", "UtilEUR", "K6 M" },
+                { "FACT_RECONC", "AuthoEUR", "K6" }, { "FACT_RECONC", "SGC_UnitCode", "K6" },
+                { "FACT_RECONC", "AuthorisationId", "grain" }, { "FACT_RECONC", "HeadOfficeSirisId", "K6 M" },
+                { "FACT_ALLREPO", "SnapshotDate", "K4 R" }, { "FACT_ALLREPO", "SLA_CateCode", "K4 R" },
+                { "FACT_ALLREPO", "InstLabel", "K4 R (Sponsored)" }, { "FACT_ALLREPO", "BuySell", "K4 R" },
+                { "FACT_ALLREPO", "NotionalBond_EUR", "R" }, { "FACT_ALLREPO", "RiskNet_EUR", "K4 R1c" },
+                { "FACT_ALLREPO", "Haircut", "R1c R2" }, { "FACT_ALLREPO", "Rating_ssj", "R" },
+                { "FACT_ALLREPO", "IssuerId", "R1c" }, { "FACT_ALLREPO", "HeadOfficeSirisId", "K4 R" },
+                { "FACT_ALLREPO", "CashAmount_EUR", "PF-05" },
+                { "FACT_SALES", "RicosCode", "C2" }, { "FACT_SALES", "DealDate", "C2" },
+                { "FACT_SALES", "MaturityDate", "C2" }, { "FACT_SALES", "IsRebooked", "C2" },
+                { "FACT_SALES", "NominalAmountEUR", "C2" }, { "FACT_SALES", "ProductLineGroupName", "C2" },
+                { "DIM_PRODUCTLINE", "ProductLineGroupName", "C2" }, { "DIM_PRODUCTLINE", "Family", "C2" },
+                { "DIM_DATE", "Date", "all" }, { "DIM_DATE", "YearMonth", "R2 R3" },
+                { "FACT_CORTEX", "SnapshotDate", "K1-K3 M (CORTEX)" }, { "FACT_CORTEX", "HeadOfficeSirisId", "K1-K3 M" },
+                { "FACT_CORTEX", "16A_Auth", "K1-K3 M" }, { "FACT_CORTEX", "16A_Util", "K1-K3 M" },
+                { "P1 Source", "Source", "A4" }
+            }
+        )
+    RETURN
+        ADDCOLUMNS (
+            qNeed,
+            "Found", VAR t = [Table] VAR c = [Column] RETURN COUNTROWS ( FILTER ( qCols, [T] = t && [C] = c ) ) > 0,
+            "DataType", VAR t = [Table] VAR c = [Column] RETURN MAXX ( FILTER ( qCols, [T] = t && [C] = c ), [DT] )
+        )
+    ORDER BY [Found], [Table], [Column]
+
+// ---- PF-01 FACT_HF_NAV per month ---------------------------------------------------------------------------
+EVALUATE
+    VAR qDimIds = DISTINCT ( DIM_COUNTERPARTY[HeadOfficeSirisId] )
+    RETURN
+        ADDCOLUMNS (
+            CALCULATETABLE ( VALUES ( FACT_HF_NAV[MonthEnd] ), REMOVEFILTERS () ),
+            "Rows", CALCULATE ( COUNTROWS ( FACT_HF_NAV ), REMOVEFILTERS ( DIM_COUNTERPARTY ) ),
+            "Funds", CALCULATE ( DISTINCTCOUNT ( FACT_HF_NAV[Fund_Name] ), REMOVEFILTERS ( DIM_COUNTERPARTY ) ),
+            "Mapped", CALCULATE ( COUNTROWS ( FACT_HF_NAV ), FACT_HF_NAV[MapStatus] = "mapped" ) + 0,
+            "NoEntity", CALCULATE ( COUNTROWS ( FACT_HF_NAV ), FACT_HF_NAV[MapStatus] = "no entity" ) + 0,
+            "Unmapped", CALCULATE ( COUNTROWS ( FACT_HF_NAV ), FACT_HF_NAV[MapStatus] = "unmapped" ) + 0,
+            "IdsNotInDim",
+                COUNTROWS ( EXCEPT (
+                    CALCULATETABLE ( DISTINCT ( FACT_HF_NAV[HeadOfficeSirisId] ), NOT ISBLANK ( FACT_HF_NAV[HeadOfficeSirisId] ) ),
+                    qDimIds ) ) + 0,
+            "NAV_Cur_USDm", CALCULATE ( SUM ( FACT_HF_NAV[NAV_Cur] ) ),
+            "NAVChg1M_Blank", CALCULATE ( COUNTROWS ( FACT_HF_NAV ), ISBLANK ( FACT_HF_NAV[NAVChg_1M] ) ) + 0,
+            "Breach", CALCULATE ( COUNTROWS ( FACT_HF_NAV ), FACT_HF_NAV[Covenant] = "Breach" ) + 0,
+            "BreachCond", CALCULATE ( COUNTROWS ( FACT_HF_NAV ), FACT_HF_NAV[Covenant] = "Breach (Conditional)" ) + 0,
+            "CovenantOther",
+                CALCULATE ( COUNTROWS ( FACT_HF_NAV ),
+                    NOT FACT_HF_NAV[Covenant] IN { "Compliant", "Breach", "Breach (Conditional)" } ) + 0
+        )
+    ORDER BY [MonthEnd]
+
+// ---- PF-02a HF Scope by rule ---------------------------------------------------------------------------------
+EVALUATE
+    VAR qRows =
+        ADDCOLUMNS (
+            CALCULATETABLE (
+                SELECTCOLUMNS ( DIM_COUNTERPARTY, "Id", DIM_COUNTERPARTY[HeadOfficeSirisId], "Cph", DIM_COUNTERPARTY[CPH_Id],
+                    "DimSector", DIM_COUNTERPARTY[Sector], "Mcg", DIM_COUNTERPARTY[MCG_Code] ),
+                REMOVEFILTERS (), DIM_COUNTERPARTY[HF Scope] = "Hedge fund" ),
+            "@Nav", IF ( [Id] IN _pNavIds, "NAV", "-" ),
+            "@Sector", IF ( [DimSector] = "Hedge Fund", "SectorHF", "-" ),
+            "@Mcg", IF ( [Mcg] = "MCG41", "MCG41", "-" ),
+            "@16A", IF ( [Id] IN _pSectorIds, "16A-HF", "-" )
+        )
+    VAR qCombos = SUMMARIZE ( qRows, [@Nav], [@Sector], [@Mcg], [@16A] )
+    RETURN
+        ADDCOLUMNS (
+            qCombos,
+            "CPYs", VAR a = [@Nav] VAR b = [@Sector] VAR c = [@Mcg] VAR d = [@16A]
+                RETURN COUNTROWS ( FILTER ( qRows, [@Nav] = a && [@Sector] = b && [@Mcg] = c && [@16A] = d ) ),
+            "CPHs", VAR a = [@Nav] VAR b = [@Sector] VAR c = [@Mcg] VAR d = [@16A]
+                RETURN COUNTROWS ( DISTINCT ( SELECTCOLUMNS (
+                    FILTER ( qRows, [@Nav] = a && [@Sector] = b && [@Mcg] = c && [@16A] = d && NOT ISBLANK ( [Cph] ) ), "C", [Cph] ) ) ),
+            "Util16A_Last",
+                VAR a = [@Nav] VAR b = [@Sector] VAR c = [@Mcg] VAR d = [@16A]
+                VAR qIds = SELECTCOLUMNS ( FILTER ( qRows, [@Nav] = a && [@Sector] = b && [@Mcg] = c && [@16A] = d ), "I", [Id] )
+                RETURN
+                    CALCULATE (
+                        SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[Utilisation] ) ) ),
+                        REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] = _pLast16,
+                        NOT ISBLANK ( FACT_LIMIT_16A[AuthorisationId] ),
+                        TREATAS ( qIds, FACT_LIMIT_16A[HeadOfficeSirisId] ) ),
+            "Limit16A_Last",
+                VAR a = [@Nav] VAR b = [@Sector] VAR c = [@Mcg] VAR d = [@16A]
+                VAR qIds = SELECTCOLUMNS ( FILTER ( qRows, [@Nav] = a && [@Sector] = b && [@Mcg] = c && [@16A] = d ), "I", [Id] )
+                RETURN
+                    CALCULATE (
+                        SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[Amount] ) ) ),
+                        REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] = _pLast16,
+                        NOT ISBLANK ( FACT_LIMIT_16A[AuthorisationId] ),
+                        TREATAS ( qIds, FACT_LIMIT_16A[HeadOfficeSirisId] ) )
+        )
+    ORDER BY [CPYs] DESC
+
+// ---- PF-02b NAV-report entities outside Sector "Hedge Fund", and 16A-HF CPYs outside the scope ----------------
+EVALUATE
+    VAR qNavOut =
+        CALCULATETABLE (
+            SELECTCOLUMNS ( DIM_COUNTERPARTY, "Id", DIM_COUNTERPARTY[HeadOfficeSirisId], "Name", DIM_COUNTERPARTY[Name],
+                "CPH", DIM_COUNTERPARTY[CPH_Label], "Sector", DIM_COUNTERPARTY[Sector], "MCG", DIM_COUNTERPARTY[MCG_Code],
+                "Case", "NAV report, not Sector HF" ),
+            REMOVEFILTERS (), TREATAS ( _pNavIds, DIM_COUNTERPARTY[HeadOfficeSirisId] ),
+            DIM_COUNTERPARTY[Sector] <> "Hedge Fund" )
+    VAR qSectorOut =
+        CALCULATETABLE (
+            SELECTCOLUMNS ( DIM_COUNTERPARTY, "Id", DIM_COUNTERPARTY[HeadOfficeSirisId], "Name", DIM_COUNTERPARTY[Name],
+                "CPH", DIM_COUNTERPARTY[CPH_Label], "Sector", DIM_COUNTERPARTY[Sector], "MCG", DIM_COUNTERPARTY[MCG_Code],
+                "Case", "16A Sector HF, not in scope" ),
+            REMOVEFILTERS (), TREATAS ( _pSectorIds, DIM_COUNTERPARTY[HeadOfficeSirisId] ),
+            DIM_COUNTERPARTY[HF Scope] <> "Hedge fund" || ISBLANK ( DIM_COUNTERPARTY[HF Scope] ) )
+    RETURN UNION ( qNavOut, qSectorOut )
+    ORDER BY [Case], [CPH], [Name]
+
+// ---- PF-03 EUR/USD candidates ---------------------------------------------------------------------------------
+EVALUATE
+    SELECTCOLUMNS (
+        FILTER ( INFO.VIEW.COLUMNS (),
+            CONTAINSSTRING ( [Table], "FX" ) || CONTAINSSTRING ( [Table], "USD" ) || CONTAINSSTRING ( [Table], "RATE" ) ),
+        "Table", [Table], "Column", [Name], "DataType", [DataType]
+    )
+    ORDER BY [Table], [Column]
+
+// ---- PF-04a 17A / 17B, RECONC total lines, by category × booking centre ----------------------------------------
+EVALUATE
+    UNION (
+            ADDCOLUMNS (
+                CALCULATETABLE ( SUMMARIZE ( FACT_RECONC, FACT_RECONC[Category], FACT_RECONC[SGC_UnitCode] ), REMOVEFILTERS (),
+                    FACT_RECONC[SnapshotDate] = _pLastRc, FACT_RECONC[IsEnvelopeTotal] = TRUE (),
+                    FACT_RECONC[Category] IN { "17A", "17B" }, TREATAS ( _pSectorIds, FACT_RECONC[HeadOfficeSirisId] ) ),
+                "Scope", "Sector HF (CHECK_3 basis)",
+                "Util", CALCULATE ( SUMX ( SUMMARIZE ( FACT_RECONC, FACT_RECONC[AuthorisationId], FACT_RECONC[SGC_UnitCode] ),
+                            CALCULATE ( MAX ( FACT_RECONC[UtilEUR] ) ) ), REMOVEFILTERS ( DIM_COUNTERPARTY ), REMOVEFILTERS ( DIM_DATE ),
+                            FACT_RECONC[SnapshotDate] = _pLastRc, FACT_RECONC[IsEnvelopeTotal] = TRUE (),
+                            NOT ISBLANK ( FACT_RECONC[AuthorisationId] ), TREATAS ( _pSectorIds, FACT_RECONC[HeadOfficeSirisId] ) ),
+                "Auth", CALCULATE ( SUMX ( SUMMARIZE ( FACT_RECONC, FACT_RECONC[AuthorisationId], FACT_RECONC[SGC_UnitCode] ),
+                            CALCULATE ( MAX ( FACT_RECONC[AuthoEUR] ) ) ), REMOVEFILTERS ( DIM_COUNTERPARTY ), REMOVEFILTERS ( DIM_DATE ),
+                            FACT_RECONC[SnapshotDate] = _pLastRc, FACT_RECONC[IsEnvelopeTotal] = TRUE (),
+                            NOT ISBLANK ( FACT_RECONC[AuthorisationId] ), TREATAS ( _pSectorIds, FACT_RECONC[HeadOfficeSirisId] ) )
+            ),
+            ADDCOLUMNS (
+                CALCULATETABLE ( SUMMARIZE ( FACT_RECONC, FACT_RECONC[Category], FACT_RECONC[SGC_UnitCode] ), REMOVEFILTERS (),
+                    FACT_RECONC[SnapshotDate] = _pLastRc, FACT_RECONC[IsEnvelopeTotal] = TRUE (),
+                    FACT_RECONC[Category] IN { "17A", "17B" }, TREATAS ( _pScope, FACT_RECONC[HeadOfficeSirisId] ) ),
+                "Scope", "HF Scope (P6a)",
+                "Util", CALCULATE ( SUMX ( SUMMARIZE ( FACT_RECONC, FACT_RECONC[AuthorisationId], FACT_RECONC[SGC_UnitCode] ),
+                            CALCULATE ( MAX ( FACT_RECONC[UtilEUR] ) ) ), REMOVEFILTERS ( DIM_COUNTERPARTY ), REMOVEFILTERS ( DIM_DATE ),
+                            FACT_RECONC[SnapshotDate] = _pLastRc, FACT_RECONC[IsEnvelopeTotal] = TRUE (),
+                            NOT ISBLANK ( FACT_RECONC[AuthorisationId] ), TREATAS ( _pScope, FACT_RECONC[HeadOfficeSirisId] ) ),
+                "Auth", CALCULATE ( SUMX ( SUMMARIZE ( FACT_RECONC, FACT_RECONC[AuthorisationId], FACT_RECONC[SGC_UnitCode] ),
+                            CALCULATE ( MAX ( FACT_RECONC[AuthoEUR] ) ) ), REMOVEFILTERS ( DIM_COUNTERPARTY ), REMOVEFILTERS ( DIM_DATE ),
+                            FACT_RECONC[SnapshotDate] = _pLastRc, FACT_RECONC[IsEnvelopeTotal] = TRUE (),
+                            NOT ISBLANK ( FACT_RECONC[AuthorisationId] ), TREATAS ( _pScope, FACT_RECONC[HeadOfficeSirisId] ) )
+            )
+        )
+    ORDER BY [Scope], [Category], [SGC_UnitCode]
+
+// ---- PF-04b live names of the P1 / CORTEX measures P6 will call ---------------------------------------------------
+EVALUATE
+    SELECTCOLUMNS (
+        FILTER ( INFO.VIEW.MEASURES (),
+            LEFT ( [Name], 4 ) IN { "16A ", "17A ", "17B " } || LEFT ( [Name], 3 ) IN { "06 ", "Cx " }
+                || LEFT ( [Name], 5 ) IN { "Snap ", "Asof " } || [Name] IN { "Src Selected", "G1 Uses Cortex" } ),
+        "Measure", [Name], "Folder", [DisplayFolder], "Format", [FormatString],
+        "ReadsP1Unit", CONTAINSSTRING ( [Expression], "P1 Unit" ),
+        "ReadsBuySell", CONTAINSSTRING ( [Expression], "BuySell" )
+    )
+    ORDER BY [Measure]
+
+// ---- PF-05a ALLREPO 07L, last date, Sponsored × BuySell ------------------------------------------------------------
+EVALUATE
+    VAR qCells =
+        CALCULATETABLE (
+            ADDCOLUMNS (
+                SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[BuySell], FACT_ALLREPO[InstLabel] ),
+                "@Sp", IF ( CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ), "Sponsored", "Non-sponsored" ),
+                "@Rows", CALCULATE ( COUNTROWS ( FACT_ALLREPO ) ),
+                "@Cash", CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ) ),
+                "@Face", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ),
+                "@RiskNet", CALCULATE ( SUM ( FACT_ALLREPO[RiskNet_EUR] ) ),
+                "@HcZero", CALCULATE ( COUNTROWS ( FACT_ALLREPO ), FACT_ALLREPO[Haircut] = 0 ) + 0,
+                "@HcBlank", CALCULATE ( COUNTROWS ( FACT_ALLREPO ), ISBLANK ( FACT_ALLREPO[Haircut] ) ) + 0,
+                "@HcOne", CALCULATE ( COUNTROWS ( FACT_ALLREPO ), FACT_ALLREPO[Haircut] >= 1 ) + 0,
+                "@HcNum", CALCULATE ( SUMX ( FILTER ( FACT_ALLREPO, NOT ISBLANK ( FACT_ALLREPO[Haircut] )
+                              && FACT_ALLREPO[Haircut] >= 0 && FACT_ALLREPO[Haircut] < 1 ),
+                              FACT_ALLREPO[Haircut] * FACT_ALLREPO[NotionalBond_EUR] ) ),
+                "@HcDen", CALCULATE ( SUMX ( FILTER ( FACT_ALLREPO, NOT ISBLANK ( FACT_ALLREPO[Haircut] )
+                              && FACT_ALLREPO[Haircut] >= 0 && FACT_ALLREPO[Haircut] < 1 ),
+                              FACT_ALLREPO[NotionalBond_EUR] ) )
+            ),
+            REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _pLastRp, FACT_ALLREPO[SLA_CateCode] = "07L",
+            TREATAS ( _pScope, FACT_ALLREPO[HeadOfficeSirisId] ) )
+    RETURN
+        ADDCOLUMNS (
+            GROUPBY ( qCells, [@Sp], FACT_ALLREPO[BuySell],
+                "Rows", SUMX ( CURRENTGROUP (), [@Rows] ),
+                "Cash_EUR", SUMX ( CURRENTGROUP (), [@Cash] ),
+                "Face_EUR", SUMX ( CURRENTGROUP (), [@Face] ),
+                "RiskNet_EUR", SUMX ( CURRENTGROUP (), [@RiskNet] ),
+                "HcZeroRows", SUMX ( CURRENTGROUP (), [@HcZero] ),
+                "HcBlankRows", SUMX ( CURRENTGROUP (), [@HcBlank] ),
+                "HcOneRows", SUMX ( CURRENTGROUP (), [@HcOne] ),
+                "HcNum", SUMX ( CURRENTGROUP (), [@HcNum] ),
+                "HcDen", SUMX ( CURRENTGROUP (), [@HcDen] ),
+                "InstLabels", CONCATENATEX ( CURRENTGROUP (), FACT_ALLREPO[InstLabel], " · " ) ),
+            "Side", SWITCH ( FACT_ALLREPO[BuySell], "B", "17A repo (we post)", "S", "17B reverse repo (we receive)", "?" ),
+            "HcWeighted", DIVIDE ( [HcNum], [HcDen] )
+        )
+    ORDER BY [@Sp], FACT_ALLREPO[BuySell]
+
+// ---- PF-05b S side ex-Sponsored by rating bucket ---------------------------------------------------------------------
+EVALUATE
+    VAR qByRating =
+        CALCULATETABLE (
+            ADDCOLUMNS ( VALUES ( FACT_ALLREPO[Rating_ssj] ),
+                "@Face", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ),
+                "@Rows", CALCULATE ( COUNTROWS ( FACT_ALLREPO ) ),
+                "@Issuers", CALCULATE ( DISTINCTCOUNT ( FACT_ALLREPO[IssuerId] ) ) ),
+            REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _pLastRp, FACT_ALLREPO[SLA_CateCode] = "07L",
+            FACT_ALLREPO[BuySell] = "S", KEEPFILTERS ( _pNotSponsored ),
+            TREATAS ( _pScope, FACT_ALLREPO[HeadOfficeSirisId] ) )
+    VAR qTagged =
+        ADDCOLUMNS ( qByRating, "@Bucket",
+            VAR r = FACT_ALLREPO[Rating_ssj]
+            RETURN IF ( ISBLANK ( r ), "No bond detail",
+                COALESCE ( LOOKUPVALUE ( 'P6W Rating Map'[Bucket], 'P6W Rating Map'[Rating_ssj], r ), "NOT IN MAP" ) ) )
+    RETURN
+        GROUPBY ( qTagged, [@Bucket],
+            "Ratings", CONCATENATEX ( CURRENTGROUP (), COALESCE ( FACT_ALLREPO[Rating_ssj], "(blank)" ), " · " ),
+            "Face_EUR", SUMX ( CURRENTGROUP (), [@Face] ),
+            "Rows", SUMX ( CURRENTGROUP (), [@Rows] ),
+            "IssuersMax", MAXX ( CURRENTGROUP (), [@Issuers] ) )
+    ORDER BY [@Bucket]
+
+// ---- PF-06 R over time: S-side face by month-end × rating bucket since 2023 ---------------------------------------------
+EVALUATE
+    VAR qMonths =
+        FILTER (
+            ADDCOLUMNS (
+                CALCULATETABLE ( VALUES ( DIM_DATE[YearMonth] ), REMOVEFILTERS (),
+                    DIM_DATE[Date] >= DATE ( 2023, 1, 1 ), DIM_DATE[Date] <= _pLastRp ),
+                "@ME", CALCULATE ( MAX ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS ( DIM_COUNTERPARTY ) ) ),
+            NOT ISBLANK ( [@ME] ) )
+    VAR qCells =
+        GENERATE (
+            qMonths,
+            VAR d = [@ME]
+            RETURN
+                CALCULATETABLE (
+                    ADDCOLUMNS ( VALUES ( FACT_ALLREPO[Rating_ssj] ), "@Face", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ),
+                        "@HcFace", CALCULATE ( SUMX ( FILTER ( FACT_ALLREPO, FACT_ALLREPO[Haircut] >= 0 && FACT_ALLREPO[Haircut] < 1 ),
+                                       FACT_ALLREPO[Haircut] * FACT_ALLREPO[NotionalBond_EUR] ) ) ),
+                    REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = d, FACT_ALLREPO[SLA_CateCode] = "07L",
+                    FACT_ALLREPO[BuySell] = "S", KEEPFILTERS ( _pNotSponsored ),
+                    TREATAS ( _pScope, FACT_ALLREPO[HeadOfficeSirisId] ) )
+        )
+    VAR qTagged =
+        ADDCOLUMNS ( qCells, "@Bucket",
+            VAR r = FACT_ALLREPO[Rating_ssj]
+            RETURN IF ( ISBLANK ( r ), "No bond detail",
+                COALESCE ( LOOKUPVALUE ( 'P6W Rating Map'[Bucket], 'P6W Rating Map'[Rating_ssj], r ), "NOT IN MAP" ) ) )
+    RETURN
+        GROUPBY ( qTagged, DIM_DATE[YearMonth], [@ME], [@Bucket],
+            "Face_EUR", SUMX ( CURRENTGROUP (), [@Face] ),
+            "WtdHaircut", DIVIDE ( SUMX ( CURRENTGROUP (), [@HcFace] ), SUMX ( CURRENTGROUP (), [@Face] ) ) )
+    ORDER BY DIM_DATE[YearMonth], [@Bucket]
+
+// ---- PF-07a live HF deals by maturity bucket × family (SA-CCR proxy) ------------------------------------------------------
+EVALUATE
+    VAR qLive =
+        CALCULATETABLE (
+            FACT_SALES,
+            REMOVEFILTERS (),
+            TREATAS ( _pScope, FACT_SALES[RicosCode] ),
+            FACT_SALES[DealDate] <= _pLast16,
+            FACT_SALES[MaturityDate] > _pLast16,
+            FACT_SALES[MaturityDate] < DATE ( 2099, 1, 1 ),
+            FACT_SALES[IsRebooked] = FALSE (),
+            NOT FACT_SALES[ProductLineGroupName] IN { "GRI FIXED INCOME", "SCARCE RESOURCES AND XVA TRADING" }
+        )
+    VAR qRowsT =
+        ADDCOLUMNS (
+            FILTER ( qLive, ABS ( FACT_SALES[NominalAmountEUR] ) <= 5E10 ),
+            "@Yrs", ( FACT_SALES[MaturityDate] - _pLast16 ) / 365.25
+        )
+    VAR qByGroup =
+        GROUPBY (
+            ADDCOLUMNS ( qRowsT,
+                "@Bucket", SWITCH ( TRUE (), [@Yrs] <= 1, "0-1Y", [@Yrs] <= 3, "1-3Y", [@Yrs] <= 5, "3-5Y", [@Yrs] <= 10, "5-10Y", "10Y+" ),
+                "@N", ABS ( FACT_SALES[NominalAmountEUR] ),
+                "@NSD", ABS ( FACT_SALES[NominalAmountEUR] ) * ( 1 - EXP ( -0.05 * [@Yrs] ) ) / 0.05 ),
+            FACT_SALES[ProductLineGroupName], [@Bucket],
+            "N", SUMX ( CURRENTGROUP (), [@N] ),
+            "NSD", SUMX ( CURRENTGROUP (), [@NSD] ),
+            "Deals", COUNTX ( CURRENTGROUP (), 1 )
+        )
+    VAR qWithFam =
+        ADDCOLUMNS ( qByGroup,
+            "@Family", COALESCE ( LOOKUPVALUE ( DIM_PRODUCTLINE[Family], DIM_PRODUCTLINE[ProductLineGroupName], FACT_SALES[ProductLineGroupName] ), "Unmapped" ) )
+    VAR qWithProxy =
+        ADDCOLUMNS ( qWithFam,
+            "@Proxy",
+                VAR f = [@Family]
+                VAR sf = LOOKUPVALUE ( 'P6W SACCR'[SF], 'P6W SACCR'[Family], f )
+                VAR ud = LOOKUPVALUE ( 'P6W SACCR'[UseDuration], 'P6W SACCR'[Family], f )
+                RETURN sf * IF ( ud = 1, [NSD], [N] ) )
+    RETURN
+        GROUPBY ( qWithProxy, [@Bucket], [@Family],
+            "Notional_EUR", SUMX ( CURRENTGROUP (), [N] ),
+            "Deals", SUMX ( CURRENTGROUP (), [Deals] ),
+            "SACCR_Proxy_EUR", SUMX ( CURRENTGROUP (), [@Proxy] ) )
+    ORDER BY [@Bucket], [@Family]
+
+// ---- PF-07b proxy total vs 16A util (order of magnitude) -------------------------------------------------------------------
+EVALUATE
+    VAR qLive =
+        CALCULATETABLE (
+            FACT_SALES, REMOVEFILTERS (), TREATAS ( _pScope, FACT_SALES[RicosCode] ),
+            FACT_SALES[DealDate] <= _pLast16, FACT_SALES[MaturityDate] > _pLast16, FACT_SALES[MaturityDate] < DATE ( 2099, 1, 1 ),
+            FACT_SALES[IsRebooked] = FALSE (),
+            NOT FACT_SALES[ProductLineGroupName] IN { "GRI FIXED INCOME", "SCARCE RESOURCES AND XVA TRADING" } )
+    VAR qCapped = FILTER ( qLive, ABS ( FACT_SALES[NominalAmountEUR] ) <= 5E10 )
+    VAR qOverCap = COUNTROWS ( FILTER ( qLive, ABS ( FACT_SALES[NominalAmountEUR] ) > 5E10 ) ) + 0
+    VAR qProxy =
+        SUMX ( qCapped,
+            VAR y = ( FACT_SALES[MaturityDate] - _pLast16 ) / 365.25
+            VAR f = COALESCE ( LOOKUPVALUE ( DIM_PRODUCTLINE[Family], DIM_PRODUCTLINE[ProductLineGroupName], FACT_SALES[ProductLineGroupName] ), "Unmapped" )
+            VAR sf = LOOKUPVALUE ( 'P6W SACCR'[SF], 'P6W SACCR'[Family], f )
+            VAR ud = LOOKUPVALUE ( 'P6W SACCR'[UseDuration], 'P6W SACCR'[Family], f )
+            RETURN ABS ( FACT_SALES[NominalAmountEUR] ) * sf * IF ( ud = 1, ( 1 - EXP ( -0.05 * y ) ) / 0.05, 1 ) )
+    VAR qUtil =
+        CALCULATE (
+            SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[Utilisation] ) ) ),
+            REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] = _pLast16, NOT ISBLANK ( FACT_LIMIT_16A[AuthorisationId] ),
+            TREATAS ( _pScope, FACT_LIMIT_16A[HeadOfficeSirisId] ) )
+    RETURN
+        ROW ( "AsOf", _pLast16, "LiveDeals", COUNTROWS ( qCapped ), "DealsOverCap", qOverCap,
+            "LiveCPYs", COUNTROWS ( DISTINCT ( SELECTCOLUMNS ( qCapped, "R", FACT_SALES[RicosCode] ) ) ),
+            "SACCR_Proxy_EUR", qProxy, "Util16A_EUR", qUtil, "ProxyOverUtil", DIVIDE ( qProxy, qUtil ) )
+
+// ---- PF-08 as-of table and compare dates ---------------------------------------------------------------------------------
+EVALUATE
+        ADDCOLUMNS (
+            'P6W Compare',
+            "AsOfRows", COUNTROWS ( 'P6W AsOf' ),
+            "AsOfMin", MIN ( 'P6W AsOf'[Date] ),
+            "AsOfMax", MAX ( 'P6W AsOf'[Date] ),
+            "Last16A", _pLast16,
+            "CmpDate", _pLast16 - 'P6W Compare'[Days],
+            "16A_File", VAR c = _pLast16 - 'P6W Compare'[Days]
+                RETURN CALCULATE ( MAX ( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] <= c ),
+            "06_File", VAR c = _pLast16 - 'P6W Compare'[Days]
+                RETURN CALCULATE ( MAX ( FACT_LIMIT_06[SnapshotDate] ), REMOVEFILTERS (), FACT_LIMIT_06[SnapshotDate] <= c ),
+            "RECONC_File", VAR c = _pLast16 - 'P6W Compare'[Days]
+                RETURN CALCULATE ( MAX ( FACT_RECONC[SnapshotDate] ), REMOVEFILTERS (), FACT_RECONC[SnapshotDate] <= c ),
+            "ALLREPO_File", VAR c = _pLast16 - 'P6W Compare'[Days]
+                RETURN CALCULATE ( MAX ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] <= c ),
+            "Latest06", _pLast06, "LatestRECONC", _pLastRc, "LatestALLREPO", _pLastRp
+        )
+    ORDER BY 'P6W Compare'[Order]
+
+// ---- PF-09 envelopes crossing the scope boundary (16A, last date) ------------------------------------------------------------
+EVALUATE
+    VAR qEnv =
+        CALCULATETABLE (
+            SUMMARIZE ( FACT_LIMIT_16A, FACT_LIMIT_16A[HeadOfficeSirisId], FACT_LIMIT_16A[EnvelopeHolderId] ),
+            REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] = _pLast16, FACT_LIMIT_16A[StructureType] = "Envelope" )
+    VAR qTagged =
+        ADDCOLUMNS ( qEnv,
+            "@MemberIn", FACT_LIMIT_16A[HeadOfficeSirisId] IN _pScope,
+            "@HolderIn", FACT_LIMIT_16A[EnvelopeHolderId] IN _pScope )
+    VAR qCrossing = FILTER ( qTagged, [@MemberIn] <> [@HolderIn] )
+    VAR qHolders = SUMMARIZE ( FILTER ( qTagged, [@MemberIn] || [@HolderIn] ), FACT_LIMIT_16A[EnvelopeHolderId] )
+    VAR qSpanCph =
+        ADDCOLUMNS ( qHolders,
+            "@CPHs",
+                VAR h = FACT_LIMIT_16A[EnvelopeHolderId]
+                VAR qMem = SELECTCOLUMNS ( FILTER ( qTagged, FACT_LIMIT_16A[EnvelopeHolderId] = h ), "I", FACT_LIMIT_16A[HeadOfficeSirisId] )
+                RETURN CALCULATE ( DISTINCTCOUNT ( DIM_COUNTERPARTY[CPH_Id] ), REMOVEFILTERS (), TREATAS ( qMem, DIM_COUNTERPARTY[HeadOfficeSirisId] ) ) )
+    RETURN
+        UNION (
+            SELECTCOLUMNS ( qCrossing,
+                "Case", IF ( [@MemberIn], "member in scope, holder outside", "holder in scope, member outside" ),
+                "MemberId", FACT_LIMIT_16A[HeadOfficeSirisId],
+                "Member", LOOKUPVALUE ( DIM_COUNTERPARTY[Name], DIM_COUNTERPARTY[HeadOfficeSirisId], FACT_LIMIT_16A[HeadOfficeSirisId] ),
+                "HolderId", FACT_LIMIT_16A[EnvelopeHolderId],
+                "Holder", LOOKUPVALUE ( DIM_COUNTERPARTY[Name], DIM_COUNTERPARTY[HeadOfficeSirisId], FACT_LIMIT_16A[EnvelopeHolderId] ),
+                "CPHs", BLANK () ),
+            SELECTCOLUMNS ( FILTER ( qSpanCph, [@CPHs] > 1 ),
+                "Case", "envelope spans 2+ CPHs",
+                "MemberId", BLANK (), "Member", BLANK (),
+                "HolderId", FACT_LIMIT_16A[EnvelopeHolderId],
+                "Holder", LOOKUPVALUE ( DIM_COUNTERPARTY[Name], DIM_COUNTERPARTY[HeadOfficeSirisId], FACT_LIMIT_16A[EnvelopeHolderId] ),
+                "CPHs", [@CPHs] )
+        )
+    ORDER BY [Case], [Holder], [Member]
+
+// ---- PF-10 16A ratings in scope ---------------------------------------------------------------------------------------------
+EVALUATE
+    CALCULATETABLE (
+        ADDCOLUMNS ( VALUES ( FACT_LIMIT_16A[Rating] ),
+            "CPYs", CALCULATE ( DISTINCTCOUNT ( FACT_LIMIT_16A[HeadOfficeSirisId] ) ),
+            "RowsAllDates", CALCULATE ( COUNTROWS ( FACT_LIMIT_16A ), REMOVEFILTERS ( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS ( DIM_DATE ) ) ),
+        REMOVEFILTERS (), FACT_LIMIT_16A[SnapshotDate] = _pLast16, TREATAS ( _pScope, FACT_LIMIT_16A[HeadOfficeSirisId] ) )
+    ORDER BY FACT_LIMIT_16A[Rating]
