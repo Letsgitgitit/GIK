@@ -1,0 +1,117 @@
+
+DEFINE
+    VAR _kFacts = "Facts"
+    VAR _kScope = TREATAS ( { "Hedge fund" }, DIM_COUNTERPARTY[HF Scope] )
+    VAR _kSrcF = TREATAS ( { _kFacts }, 'P1 Source'[Source] )
+    VAR _kSrcC = TREATAS ( { "CORTEX" }, 'P1 Source'[Source] )
+
+// ---- C0 P6 measures in error (expect no row) -----------------------------------------------------------
+EVALUATE
+    SELECTCOLUMNS ( FILTER ( INFO.MEASURES (), LEFT ( [Name], 3 ) = "P6 " && [State] <> 1 ),
+        "Measure", [Name], "State", [State], "Error", [ErrorMessage] )
+
+// ---- C1 source values --------------------------------------------------------------------------------------------
+EVALUATE VALUES ( 'P1 Source'[Source] )
+
+// ---- C2 header + cards, facts. Expect: 16A util ≈ €443m, limit ≈ €7.0bn (A3b), Repo net risk ≈ €114.5m
+//      (17A €39.1m, 17B €75.4m), 17A ≈ €29.6bn / 17B ≈ €71bn before A3b, Excluded note "24 funds in 8 … €1,177m" ------
+EVALUATE
+    CALCULATETABLE (
+        ROW (
+            "AsOf", [P6 AsOf], "NAVMonth", [P6 NAV Month], "AsOfLabel", [P6 AsOf Label], "NAVLabel", [P6 NAV Label],
+            "Source", [P6 16A Source],
+            "16A_Util", [P6 16A Util], "16A_Limit", [P6 16A Limit], "16A_Util%", [P6 16A Util %],
+            "16A_UtilCmp", [P6 16A Util Cmp], "K1", [P6 K1 Detail], "K2", [P6 16A Headroom], "K2Detail", [P6 K2 Detail],
+            "K3", [P6 K3 Text], "K3Detail", [P6 K3 Detail],
+            "RepoNet", [P6 Repo Net Risk], "Repo17A", [P6 Repo Net Risk 17A], "Repo17B", [P6 Repo Net Risk 17B],
+            "K4", [P6 K4 Detail], "K4Spons", [P6 K4 Sponsored],
+            "K5", [P6 K5 Funds], "K5Label", [P6 K5 Label], "K5Detail", [P6 K5 Detail],
+            "K6", [P6 Repo Limit Util %], "K6Detail", [P6 K6 Detail],
+            "Excluded", [P6 Excluded Note]
+        ),
+        _kScope, _kSrcF )
+
+// ---- C3 the same 16A cards on CORTEX (expect Source "CORTEX"; figures close to C2 if CORTEX covers the funds) --------
+EVALUATE
+    CALCULATETABLE (
+        ROW ( "Source", [P6 16A Source], "16A_Util", [P6 16A Util], "16A_Limit", [P6 16A Limit], "K1", [P6 K1 Detail],
+            "K3", [P6 K3 Text], "K3Detail", [P6 K3 Detail], "K5Detail", [P6 K5 Detail] ),
+        _kScope, _kSrcC )
+
+// ---- C4 M "Who moved" (top 15 by |Δ| vs 1W), facts ---------------------------------------------------------------------
+EVALUATE
+    TOPN ( 15,
+        SUMMARIZECOLUMNS (
+            DIM_COUNTERPARTY[CPH_Label], _kScope, _kSrcF,
+            "Rating", [P6 M Rating], "Util", [P6 16A Util], "Util%", [P6 16A Util %], "Delta", [P6 M Delta],
+            "S06", [P6 M 06 Status], "U17A", [P6 17A Util], "U17B", [P6 17B Util],
+            "NAV1M", [P6 NAV 1M], "NAVYTD", [P6 NAV YTD], "Cov", [P6 M Covenant], "Stripe", [P6 M Stripe Colour],
+            "DeltaAbs", [P6 M Delta Abs] ),
+        [DeltaAbs], DESC )
+    ORDER BY [DeltaAbs] DESC
+
+// ---- C5 C1 sum check: Σ per-CPH util must equal C2's 16A_Util (no envelope shared across CPHs, PF-09) -------------------
+EVALUATE
+    VAR _t =
+        SUMMARIZECOLUMNS ( DIM_COUNTERPARTY[CPH_Label], _kScope, _kSrcF,
+            "U", [P6 16A Util], "L", [P6 16A Limit], "Over", [P6 C1 Over Limit] )
+    RETURN
+        ROW ( "CPHs", COUNTROWS ( _t ), "SumUtil", SUMX ( _t, [U] ), "SumLimit", SUMX ( _t, [L] ),
+            "BlankLabelUtil", SUMX ( FILTER ( _t, LEN ( DIM_COUNTERPARTY[CPH_Label] ) = 0 ), [U] ),
+            "OverLimitCPHs", COUNTROWS ( FILTER ( _t, [Over] > 0 ) ) + 0,
+            "TotalUtil", CALCULATE ( [P6 16A Util], _kScope, _kSrcF ) )
+
+// ---- C6 N scatter inputs (one row per CPH with NAV) ----------------------------------------------------------------------
+EVALUATE
+    FILTER (
+        SUMMARIZECOLUMNS ( DIM_COUNTERPARTY[CPH_Label], _kScope, _kSrcF,
+            "NAV_USD", [P6 NAV Cur USD], "Util_at_NAV", [P6 N Util], "UtilOverNAV", [P6 N Util Over NAV],
+            "NAVYTD", [P6 N NAV YTD], "Colour", [P6 N Colour], "Tooltip", [P6 N Tooltip] ),
+        NOT ISBLANK ( [NAV_USD] ) )
+    ORDER BY [UtilOverNAV] DESC
+
+EVALUATE
+    CALCULATETABLE ( ROW ( "P75", [P6 N Util Over NAV P75], "FX", [P6 FX At NAV], "Subtitle", [P6 N Subtitle] ), _kScope, _kSrcF )
+
+// ---- C7 V covenant & review (funds with an issue) ---------------------------------------------------------------------
+EVALUATE
+    FILTER (
+        SUMMARIZECOLUMNS ( FACT_HF_NAV[Fund_Name], _kScope,
+            "Issue", [P6 V Issue], "Severity", [P6 V Severity], "NAV1M", [P6 NAV 1M], "Since", [P6 V Since] ),
+        [Severity] > 0 )
+    ORDER BY [Severity] DESC, [NAV1M]
+
+// ---- C8 R1 mix + R1c + R2 / R3 texts. Expect As of total ≈ €64.2bn face (PF-05b), haircut ≈ 0.34 % ----------------------
+EVALUATE
+    SUMMARIZECOLUMNS ( 'P6W R Row'[Row], 'P6W Rating Map'[Bucket], _kScope, "Face", [P6 R1 Collateral] )
+    ORDER BY 'P6W R Row'[Row], 'P6W Rating Map'[Bucket]
+
+EVALUATE
+    CALCULATETABLE (
+        ROW ( "Haircut", [P6 R Wtd Haircut], "HaircutDelta", [P6 R Haircut Delta],
+            "TopIssuer", [P6 R Top Issuer Share], "TopIssuerDelta", [P6 R Top Issuer Delta],
+            "Risk17B", [P6 Repo Net Risk 17B], "Risk17BDelta", [P6 R 17B Risk Delta],
+            "R2Subtitle", [P6 R2 Subtitle], "R3Corr", [P6 R3 Corr], "R3Subtitle", [P6 R3 Subtitle], "RSubtitle", [P6 R Subtitle] ),
+        _kScope )
+
+// ---- C9 R3 series (12 NAV months) -------------------------------------------------------------------------------------------
+EVALUATE
+    FILTER (
+        SUMMARIZECOLUMNS ( DIM_DATE[YearMonth], _kScope,
+            "NAV1M", [P6 R3 NAV 1M], "LowGrade", [P6 R3 Low Grade Share], "R2Share_all", [P6 R LowGrade At] ),
+        NOT ISBLANK ( [NAV1M] ) || NOT ISBLANK ( [LowGrade] ) )
+    ORDER BY DIM_DATE[YearMonth]
+
+// ---- C10 C2 maturity proxy by bucket × family (expect lower than PF-07: A3b removes envelope funds) ------------------------
+EVALUATE
+    SUMMARIZECOLUMNS ( 'P6W Maturity Bucket'[Bucket], DIM_PRODUCTLINE[Family], _kScope,
+        "Proxy", [P6 C2 PFE Proxy], "Notional", [P6 C2 Notional], "Deals", [P6 C2 Deals] )
+    ORDER BY 'P6W Maturity Bucket'[Bucket], DIM_PRODUCTLINE[Family]
+
+// ---- C11 T: last 15 calendar days (util / limit on file days, markers) ------------------------------------------------------
+EVALUATE
+    VAR _d = CALCULATETABLE ( VALUES ( DIM_DATE[Date] ), DIM_DATE[Date] > [P6 Latest] - 15, DIM_DATE[Date] <= [P6 Latest] )
+    RETURN
+        SUMMARIZECOLUMNS ( DIM_DATE[Date], _d, _kScope,
+            "Util", [P6 T Util], "Limit", [P6 T Limit], "LastMarker", [P6 T Last Marker], "NAVMarker", [P6 T NAV Marker] )
+    ORDER BY DIM_DATE[Date]
