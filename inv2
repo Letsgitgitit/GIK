@@ -326,3 +326,81 @@ EVALUATE
     )
     ORDER BY FACT_ALLREPO[BuySell], [CashAmount_EUR] DESC
 
+
+
+
+DEFINE
+    VAR _qLast16 = CALCULATE( MAX( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS() )
+    VAR _qLastRc = CALCULATE( MAX( FACT_RECONC[SnapshotDate] ), REMOVEFILTERS() )
+    VAR _qLastRp = CALCULATE( MAX( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS() )
+    VAR _qHfIds =
+        CALCULATETABLE( VALUES( FACT_LIMIT_16A[HeadOfficeSirisId] ), REMOVEFILTERS(),
+            FACT_LIMIT_16A[SnapshotDate] = _qLast16, FACT_LIMIT_16A[Sector] = "Hedge Fund" )
+    VAR _qRc =
+        CALCULATETABLE(
+            FACT_RECONC, REMOVEFILTERS(),
+            FACT_RECONC[SnapshotDate] = _qLastRc, FACT_RECONC[IsEnvelopeTotal] = TRUE (),
+            TREATAS( _qHfIds, FACT_RECONC[HeadOfficeSirisId] ) )
+    VAR _qRp =
+        FILTER(
+            CALCULATETABLE(
+                FACT_ALLREPO, REMOVEFILTERS(),
+                FACT_ALLREPO[SnapshotDate] = _qLastRp, FACT_ALLREPO[SLA_CateCode] = "07L",
+                TREATAS( _qHfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ),
+            NOT CONTAINSSTRING( FACT_ALLREPO[InstLabel], "Sponsored" ) )
+    VAR _qIds =
+        DISTINCT(
+            UNION(
+                SELECTCOLUMNS( _qRc, "Id", FACT_RECONC[HeadOfficeSirisId] ),
+                SELECTCOLUMNS( _qRp, "Id", FACT_ALLREPO[HeadOfficeSirisId] ) ) )
+    VAR _qRows =
+        ADDCOLUMNS(
+            _qIds,
+            "Name", LOOKUPVALUE( DIM_COUNTERPARTY[Name], DIM_COUNTERPARTY[HeadOfficeSirisId], [Id] ),
+            "Util17A", VAR i = [Id] RETURN SUMX( FILTER( _qRc, FACT_RECONC[HeadOfficeSirisId] = i && FACT_RECONC[Category] = "17A" ), FACT_RECONC[UtilEUR] ),
+            "Util17B", VAR i = [Id] RETURN SUMX( FILTER( _qRc, FACT_RECONC[HeadOfficeSirisId] = i && FACT_RECONC[Category] = "17B" ), FACT_RECONC[UtilEUR] ),
+            "Util17A_BC10", VAR i = [Id] RETURN SUMX( FILTER( _qRc, FACT_RECONC[HeadOfficeSirisId] = i && FACT_RECONC[Category] = "17A" && FACT_RECONC[SGC_UnitCode] = "10" ), FACT_RECONC[UtilEUR] ),
+            "Util17B_BC10", VAR i = [Id] RETURN SUMX( FILTER( _qRc, FACT_RECONC[HeadOfficeSirisId] = i && FACT_RECONC[Category] = "17B" && FACT_RECONC[SGC_UnitCode] = "10" ), FACT_RECONC[UtilEUR] ),
+            "Cash_S", VAR i = [Id] RETURN SUMX( FILTER( _qRp, FACT_ALLREPO[HeadOfficeSirisId] = i && FACT_ALLREPO[BuySell] = "S" ), FACT_ALLREPO[CashAmount_EUR] ),
+            "Cash_B", VAR i = [Id] RETURN SUMX( FILTER( _qRp, FACT_ALLREPO[HeadOfficeSirisId] = i && FACT_ALLREPO[BuySell] = "B" ), FACT_ALLREPO[CashAmount_EUR] ),
+            "Face_S", VAR i = [Id] RETURN SUMX( FILTER( _qRp, FACT_ALLREPO[HeadOfficeSirisId] = i && FACT_ALLREPO[BuySell] = "S" ), FACT_ALLREPO[NotionalBond_EUR] ),
+            "Face_B", VAR i = [Id] RETURN SUMX( FILTER( _qRp, FACT_ALLREPO[HeadOfficeSirisId] = i && FACT_ALLREPO[BuySell] = "B" ), FACT_ALLREPO[NotionalBond_EUR] )
+        )
+
+// ---- Q1 per CPY ---------------------------------------------------------------------------------
+EVALUATE
+    ADDCOLUMNS(
+        _qRows,
+        "Verdict",
+            VAR a = COALESCE( [Util17A], 0 )
+            VAR b = COALESCE( [Util17B], 0 )
+            VAR s = COALESCE( [Cash_S], 0 )
+            VAR bb = COALESCE( [Cash_B], 0 )
+            VAR errRule = ABS( a - s ) + ABS( b - bb )        // S = 17A, B = 17B
+            VAR errFlip = ABS( a - bb ) + ABS( b - s )        // S = 17B, B = 17A
+            RETURN
+                SWITCH( TRUE (),
+                    a + b + s + bb = 0, "nothing",
+                    errRule < errFlip * 0.5, "S=17A, B=17B",
+                    errFlip < errRule * 0.5, "S=17B, B=17A",
+                    "unclear" )
+    )
+    ORDER BY [Util17B] DESC, [Util17A] DESC
+
+// ---- Q2 count of CPYs per verdict, and the utilisation they carry -------------------------------------
+EVALUATE
+    GROUPBY(
+        ADDCOLUMNS(
+            _qRows,
+            "@V",
+                VAR a = COALESCE( [Util17A], 0 ) VAR b = COALESCE( [Util17B], 0 )
+                VAR s = COALESCE( [Cash_S], 0 ) VAR bb = COALESCE( [Cash_B], 0 )
+                VAR errRule = ABS( a - s ) + ABS( b - bb ) VAR errFlip = ABS( a - bb ) + ABS( b - s )
+                RETURN SWITCH( TRUE (), a + b + s + bb = 0, "nothing", errRule < errFlip * 0.5, "S=17A, B=17B",
+                    errFlip < errRule * 0.5, "S=17B, B=17A", "unclear" ),
+            "@U", COALESCE( [Util17A], 0 ) + COALESCE( [Util17B], 0 )
+        ),
+        [@V],
+        "CPYs", COUNTX( CURRENTGROUP(), 1 ),
+        "Util17A17B", SUMX( CURRENTGROUP(), [@U] )
+    )
