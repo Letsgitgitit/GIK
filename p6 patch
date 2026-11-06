@@ -1,0 +1,65 @@
+// =====================================================================================
+// P6W_SETUP_PATCH_01.dax  -  BUILD 2026-11-06b  -  replaces two calculated tables of P6W_SETUP (build a)
+// Why: PREFLIGHT_2 (6 Nov). Q4: the fixed-income / treasury family is called "GRI&T" in DIM_PRODUCTLINE (1 deal had
+// no factor). Q3 + Will: rating buckets on the internal scale (C strong, D average, D- and below low grade; Z unmapped).
+// HOW: Data pane > click the table > formula bar > Ctrl+A > paste the block > Enter. Do both.
+//      P6W Rating Map: re-apply Sort by column (Bucket by Bucket Order) and hide Rating_ssj, Bucket Order, Low Grade.
+// CHECK (DAX query view):
+//   EVALUATE ROW ( "Unmapped", COUNTROWS ( FILTER ( 'P6W Rating Map', [Bucket] = "Unmapped" ) ) + 0,
+//                  "Buckets", DISTINCTCOUNT ( 'P6W Rating Map'[Bucket] ),
+//                  "GRIT", COUNTROWS ( FILTER ( 'P6W SACCR', [Family] = "GRI&T" ) ) )
+//   Expect Unmapped 0, Buckets 6, GRIT 1.
+// =====================================================================================
+
+P6W SACCR =
+-- C2 weights (Q3, 6 Nov): regulatory SA-CCR supervisory factors per DIM_PRODUCTLINE[Family]. UseDuration = 1:
+-- notional × supervisory duration (1 − e^(−0.05·M)) ÷ 0.05. Family names exactly as DIM_PRODUCTLINE holds them
+-- (PREFLIGHT_2 Q4, 6 Nov: the fixed-income / treasury family is "GRI&T").
+-- Abacus grids flagged as a later upgrade (contract Part G Q3): would replace SF here once baked into Sales gold.
+DATATABLE (
+    "Family", STRING,
+    "SF", DOUBLE,
+    "UseDuration", INTEGER,
+    {
+        { "Rates", 0.005, 1 },
+        { "FX", 0.04, 0 },
+        { "Credit & securitisation", 0.05, 1 },
+        { "Equity", 0.32, 0 },
+        { "GRI&T", 0.005, 1 },
+        { "Other", 0.15, 0 },
+        { "Unmapped", 0.15, 0 }
+    }
+)
+
+P6W Rating Map =
+-- R buckets on the internal scale (Will, 6 Nov): C is a strong grade for a hedge fund's collateral, D is average,
+-- D- and below is low grade. Built from the ratings ALLREPO actually carries, so a new value shows as "Unmapped"
+-- (P6W_SETUP S5 / PREFLIGHT_2 Q3) instead of dropping out. Z (default / worst on the scale) counts as low grade.
+VAR rm_vals = CALCULATETABLE ( DISTINCT ( FACT_ALLREPO[Rating_ssj] ), REMOVEFILTERS () )
+VAR rm_tagged =
+    ADDCOLUMNS (
+        SELECTCOLUMNS ( rm_vals, "Rating_ssj", FACT_ALLREPO[Rating_ssj] ),
+        "@r", UPPER ( TRIM ( [Rating_ssj] ) )
+    )
+RETURN
+    SELECTCOLUMNS (
+        ADDCOLUMNS (
+            rm_tagged,
+            "@b",
+                SWITCH (
+                    TRUE (),
+                    ISBLANK ( [Rating_ssj] ) || [@r] = "" || CONTAINSSTRING ( [@r], "NOT IDENTIFIED" ), 6,
+                    LEFT ( [@r], 1 ) = "A", 1,
+                    LEFT ( [@r], 1 ) = "B", 2,
+                    LEFT ( [@r], 1 ) = "C", 3,
+                    [@r] IN { "D+", "D" }, 4,
+                    [@r] = "D-" || LEFT ( [@r], 1 ) IN { "E", "F", "Z" }, 5,
+                    9
+                )
+        ),
+        "Rating_ssj", [Rating_ssj],
+        "Bucket", SWITCH ( [@b], 1, "A", 2, "B", 3, "C", 4, "D", 5, "D- and below", 6, "No bond detail", "Unmapped" ),
+        "Bucket Order", [@b],
+        "Low Grade", IF ( [@b] = 5, 1, 0 )
+    )
+
