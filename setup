@@ -1,0 +1,213 @@
+// =====================================================================================
+// P6W_SETUP.dax  -  BUILD 2026-11-06a  -  setup objects for P6a Hedge Fund Watch (Desktop, by hand; TE2 cannot add
+// tables / calculated columns safely in this file's workflow)
+// Contract: P6A_LAYOUT_AND_CONTRACT.md v1.1, §A3 and §A7. Order: S0 → S1 → S2 → S3 → S4 → S5, then P6A_PREFLIGHT.dax.
+// Calculated tables and columns compute on Enter; no refresh needed after S2–S3 (S0 needs one Close & Apply).
+// UNDO: save a copy of the .pbix before starting.
+// =====================================================================================
+
+
+// ---- S0 the NAV table --------------------------------------------------------------------------------------
+// 1. Run hfnav_run.py once on the work computer (config block: SRC_DIR, GOLD_DIR, WORK_DIR, NAME_MAP).
+//    Expect exit 0 and "published" in the report under WORK_DIR\reports. 20 months, ~867 rows (VBA run, 5 Nov).
+// 2. Paste P6W_FACT_HF_NAV.m into a new blank query named FACT_HF_NAV, FolderPath = GOLD_DIR. Close & Apply.
+// 3. Hide every FACT_HF_NAV column except Fund_Name, CPH_Name, Covenant (the measures read the rest).
+
+
+// ---- S1 relationships (Model view ▸ Manage relationships ▸ New) -------------------------------------------
+// R1  FACT_HF_NAV[HeadOfficeSirisId]  →  DIM_COUNTERPARTY[HeadOfficeSirisId]   Many-to-one · Single · Active
+// R2  FACT_HF_NAV[MonthEnd]           →  DIM_DATE[Date]                        Many-to-one · Single · Active
+// If Desktop says the types differ on R1: both must be Text. Do NOT change a type in DIM_COUNTERPARTY; flag it instead
+// (the bake writes the 10-character padded id, the same form as the other gold facts).
+// Rows with MapStatus "no entity" / "unmapped" have a blank id and simply relate to nothing.
+
+
+// ---- S2 two columns on DIM_COUNTERPARTY -------------------------------------------------------------------------
+// Table view ▸ DIM_COUNTERPARTY ▸ Table tools ▸ New column (NOT New measure). Paste one at a time.
+// Both read only FACT_HF_NAV (≈ 900 rows) and the row's own columns: no lookup into a large fact (P1 lesson).
+
+HF Scope =
+-- A3: NAV report (any month) OR Sector "Hedge Fund" OR MCG41. Alternative funds deferred (Q4, 6 Nov): blank.
+-- Sector and MCG_Code are the dimension's own columns; PF-02 compares them with 16A Sector on the last date.
+VAR hfs_inNav = NOT ISEMPTY ( RELATEDTABLE ( FACT_HF_NAV ) )
+VAR hfs_sector = DIM_COUNTERPARTY[Sector] = "Hedge Fund"
+VAR hfs_mcg = DIM_COUNTERPARTY[MCG_Code] = "MCG41"
+RETURN
+    IF ( hfs_inNav || hfs_sector || hfs_mcg, "Hedge fund" )
+
+HF Strategy =
+-- Strategy of the entity's latest NAV row (StrategyLatest is already the fund's latest non-blank strategy, set in the
+-- bake). Entities in scope but not in the NAV report get a label, so the A2 slicer can still pick them.
+VAR hfst_rows = RELATEDTABLE ( FACT_HF_NAV )
+VAR hfst_last = MAXX ( hfst_rows, FACT_HF_NAV[MonthEnd] )
+VAR hfst_val =
+    MAXX ( FILTER ( hfst_rows, FACT_HF_NAV[MonthEnd] = hfst_last ), FACT_HF_NAV[StrategyLatest] )
+RETURN
+    SWITCH (
+        TRUE (),
+        DIM_COUNTERPARTY[HF Scope] <> "Hedge fund", BLANK (),
+        ISBLANK ( hfst_last ), "Not in NAV report",
+        ISBLANK ( hfst_val ) || hfst_val = "", "No strategy given",
+        hfst_val
+    )
+
+
+// ---- S3 calculated tables: Modeling ▸ New table, paste one at a time ----------------------------------------
+// None of them may have a relationship (Model view: delete any line Desktop draws to them).
+
+P6W AsOf =
+-- A4: the as-of dropdown. 16A snapshot dates since 2023 (the history start). Disconnected, single select.
+SELECTCOLUMNS (
+    FILTER (
+        CALCULATETABLE ( VALUES ( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS () ),
+        FACT_LIMIT_16A[SnapshotDate] >= DATE ( 2023, 1, 1 )
+    ),
+    "Date", FACT_LIMIT_16A[SnapshotDate]
+)
+
+P6W Compare =
+DATATABLE (
+    "Window", STRING,
+    "Days", INTEGER,
+    "Order", INTEGER,
+    { { "1D", 1, 1 }, { "1W", 7, 2 }, { "1M", 30, 3 } }
+)
+
+P6W NAV Threshold =
+-- K5 / V threshold in whole percent (integers avoid float steps). The measure P6 NAV Threshold divides by 100,
+-- default −5 when nothing is picked. Single-select slicer (in the hidden slicer panel, as P1).
+SELECTCOLUMNS ( GENERATESERIES ( -20, 0, 1 ), "Threshold %", [Value] )
+
+P6W Maturity Bucket =
+-- C2 axis. A deal sits in a bucket when LoYears < remaining years <= HiYears (0-1Y includes the lower end).
+DATATABLE (
+    "Bucket", STRING,
+    "LoYears", DOUBLE,
+    "HiYears", DOUBLE,
+    "Order", INTEGER,
+    {
+        { "0-1Y", 0, 1, 1 },
+        { "1-3Y", 1, 3, 2 },
+        { "3-5Y", 3, 5, 3 },
+        { "5-10Y", 5, 10, 4 },
+        { "10Y+", 10, 99, 5 }
+    }
+)
+
+P6W SACCR =
+-- C2 weights (Q3, 6 Nov): regulatory SA-CCR supervisory factors per DIM_PRODUCTLINE[Family]. UseDuration = 1:
+-- notional × supervisory duration (1 − e^(−0.05·M)) ÷ 0.05. Family names exactly as P5W_SETUP S2 writes them.
+-- Abacus grids flagged as a later upgrade (contract Part G Q3): would replace SF here once baked into Sales gold.
+DATATABLE (
+    "Family", STRING,
+    "SF", DOUBLE,
+    "UseDuration", INTEGER,
+    {
+        { "Rates", 0.005, 1 },
+        { "FX", 0.04, 0 },
+        { "Credit & securitisation", 0.05, 1 },
+        { "Equity", 0.32, 0 },
+        { "Fixed income & treasury", 0.005, 1 },
+        { "Other", 0.15, 0 },
+        { "Unmapped", 0.15, 0 }
+    }
+)
+
+P6W Rating Map =
+-- R buckets, built from the ratings ALLREPO actually carries (so a new rating never drops out silently).
+-- First letter decides; blank / "not identified" = no bond detail; anything else = "Unmapped" (PF-05b lists it).
+VAR rm_vals = CALCULATETABLE ( DISTINCT ( FACT_ALLREPO[Rating_ssj] ), REMOVEFILTERS () )
+RETURN
+    ADDCOLUMNS (
+        SELECTCOLUMNS ( rm_vals, "Rating_ssj", FACT_ALLREPO[Rating_ssj] ),
+        "Bucket",
+            VAR rm_r = TRIM ( [Rating_ssj] )
+            VAR rm_l = UPPER ( LEFT ( rm_r, 1 ) )
+            RETURN
+                SWITCH (
+                    TRUE (),
+                    ISBLANK ( [Rating_ssj] ) || rm_r = "" || CONTAINSSTRING ( rm_r, "not identified" ), "No bond detail",
+                    rm_l = "A", "A",
+                    rm_l = "B", "B",
+                    rm_l = "C", "C",
+                    rm_l IN { "D", "E", "F", "G", "H" }, "D and below",
+                    "Unmapped"
+                ),
+        "Bucket Order",
+            VAR rm_r2 = TRIM ( [Rating_ssj] )
+            VAR rm_l2 = UPPER ( LEFT ( rm_r2, 1 ) )
+            RETURN
+                SWITCH (
+                    TRUE (),
+                    ISBLANK ( [Rating_ssj] ) || rm_r2 = "" || CONTAINSSTRING ( rm_r2, "not identified" ), 5,
+                    rm_l2 = "A", 1,
+                    rm_l2 = "B", 2,
+                    rm_l2 = "C", 3,
+                    rm_l2 IN { "D", "E", "F", "G", "H" }, 4,
+                    9
+                )
+    )
+
+P6W R Compare =
+DATATABLE (
+    "Window", STRING,
+    "Days", INTEGER,
+    "Order", INTEGER,
+    { { "1M", 30, 1 }, { "3M", 91, 2 }, { "6M", 182, 3 }, { "1Y", 365, 4 }, { "2Y", 730, 5 } }
+)
+
+P6W R Range =
+DATATABLE (
+    "Range", STRING,
+    "Days", INTEGER,
+    "Order", INTEGER,
+    { { "3M", 91, 1 }, { "6M", 182, 2 }, { "1Y", 365, 3 }, { "2Y", 730, 4 }, { "All", 99999, 5 } }
+)
+
+P6W R Row =
+DATATABLE (
+    "Row", STRING,
+    "Order", INTEGER,
+    { { "As of", 1 }, { "Compare", 2 } }
+)
+
+
+// ---- S4 sort and hide (Column tools ▸ Sort by column) -------------------------------------------------------
+// P6W Compare[Window] by [Order] · P6W Maturity Bucket[Bucket] by [Order] · P6W Rating Map[Bucket] by [Bucket Order]
+// P6W R Compare[Window] by [Order] · P6W R Range[Range] by [Order] · P6W R Row[Row] by [Order]
+// Hide every Order / Days / LoYears / HiYears / Bucket Order column, P6W SACCR (whole table) and P6W Rating Map[Rating_ssj].
+// P6W AsOf[Date]: Format "d mmm yyyy". Sort the slicer descending (latest first) in the visual, not here.
+
+
+// ---- S5 check (DAX query view, after S0–S4) ---------------------------------------------------------------
+// Expect: NavRows ≈ 867 · NavMonths 20 · NavIdsNotInDim 0 · ScopeCPYs ≥ 139 (Sector HF alone was 139 on 2 Nov) ·
+//         StrategyValues > 1 · AsOfDates > 900 · AsOfMax = latest 16A date · Compare 3 · Threshold 21 · Buckets 5 ·
+//         SACCR 7 · RatingBuckets ≤ 5 named + RatingUnmapped 0 · RCompare 5 · RRange 5 · RRow 2 · BrokenMeasures 0.
+EVALUATE
+    ROW (
+        "NavRows", COUNTROWS ( FACT_HF_NAV ),
+        "NavMonths", DISTINCTCOUNT ( FACT_HF_NAV[MonthEnd] ),
+        "NavMapped", CALCULATE ( COUNTROWS ( FACT_HF_NAV ), FACT_HF_NAV[MapStatus] = "mapped" ),
+        "NavIdsNotInDim",
+            COUNTROWS (
+                EXCEPT (
+                    CALCULATETABLE ( DISTINCT ( FACT_HF_NAV[HeadOfficeSirisId] ), NOT ISBLANK ( FACT_HF_NAV[HeadOfficeSirisId] ) ),
+                    DISTINCT ( DIM_COUNTERPARTY[HeadOfficeSirisId] )
+                )
+            ) + 0,
+        "ScopeCPYs", CALCULATE ( COUNTROWS ( DIM_COUNTERPARTY ), DIM_COUNTERPARTY[HF Scope] = "Hedge fund" ),
+        "ScopeCPHs", CALCULATE ( DISTINCTCOUNT ( DIM_COUNTERPARTY[CPH_Id] ), DIM_COUNTERPARTY[HF Scope] = "Hedge fund" ),
+        "StrategyValues", CALCULATE ( DISTINCTCOUNT ( DIM_COUNTERPARTY[HF Strategy] ), DIM_COUNTERPARTY[HF Scope] = "Hedge fund" ),
+        "AsOfDates", COUNTROWS ( 'P6W AsOf' ),
+        "AsOfMax", MAX ( 'P6W AsOf'[Date] ),
+        "Compare", COUNTROWS ( 'P6W Compare' ),
+        "Threshold", COUNTROWS ( 'P6W NAV Threshold' ),
+        "Buckets", COUNTROWS ( 'P6W Maturity Bucket' ),
+        "SACCR", COUNTROWS ( 'P6W SACCR' ),
+        "RatingValues", COUNTROWS ( 'P6W Rating Map' ),
+        "RatingUnmapped", COUNTROWS ( FILTER ( 'P6W Rating Map', [Bucket] = "Unmapped" ) ) + 0,
+        "RCompare", COUNTROWS ( 'P6W R Compare' ),
+        "RRange", COUNTROWS ( 'P6W R Range' ),
+        "RRow", COUNTROWS ( 'P6W R Row' ),
+        "BrokenMeasures", COUNTROWS ( FILTER ( INFO.MEASURES (), [State] <> 1 ) ) + 0
+    )
