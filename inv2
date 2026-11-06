@@ -218,23 +218,6 @@ EVALUATE
     )
     ORDER BY [Rows] DESC
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 DEFINE
     VAR _cLast16 = CALCULATE( MAX( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS() )
     VAR _cLastRp = CALCULATE( MAX( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS() )
@@ -290,3 +273,54 @@ EVALUATE
             "OldestDeal", MINX( CURRENTGROUP(), FACT_SALES[DealDate] )
         )
     ORDER BY FACT_SALES[ProductLineGroupName], [@Bucket]
+
+
+
+
+
+
+
+
+
+
+
+
+
+DEFINE
+    VAR _rLast16 = CALCULATE( MAX( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS() )
+    VAR _rLastRc = CALCULATE( MAX( FACT_RECONC[SnapshotDate] ), REMOVEFILTERS() )
+    VAR _rLastRp = CALCULATE( MAX( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS() )
+    VAR _rHfIds =
+        CALCULATETABLE( VALUES( FACT_LIMIT_16A[HeadOfficeSirisId] ), REMOVEFILTERS(),
+            FACT_LIMIT_16A[SnapshotDate] = _rLast16, FACT_LIMIT_16A[Sector] = "Hedge Fund" )
+
+// ---- R1 RECONC 17A / 17B, HF, total lines -------------------------------------------------------
+EVALUATE
+    SUMMARIZECOLUMNS(
+        FACT_RECONC[Category],
+        FACT_RECONC[SGC_UnitCode],
+        TREATAS( { _rLastRc }, FACT_RECONC[SnapshotDate] ),
+        TREATAS( _rHfIds, FACT_RECONC[HeadOfficeSirisId] ),
+        FILTER( ALL( FACT_RECONC[IsLigneTotal] ), FACT_RECONC[IsLigneTotal] = TRUE () ),
+        "LastReconcDate", _rLastRc,
+        "Auths", DISTINCTCOUNT( FACT_RECONC[AuthorisationId] ),
+        "CPYs", DISTINCTCOUNT( FACT_RECONC[HeadOfficeSirisId] ),
+        "AuthoEUR", SUM( FACT_RECONC[AuthoEUR] ),
+        "UtilEUR", SUM( FACT_RECONC[UtilEUR] )
+    )
+    ORDER BY FACT_RECONC[Category], FACT_RECONC[SGC_UnitCode]
+
+// ---- R2 ALLREPO repo-type rows, HF, last date ------------------------------------------------------
+EVALUATE
+    SUMMARIZECOLUMNS(
+        FACT_ALLREPO[BuySell],
+        FACT_ALLREPO[CDR_BOPCCode],
+        TREATAS( { _rLastRp }, FACT_ALLREPO[SnapshotDate] ),
+        TREATAS( _rHfIds, FACT_ALLREPO[HeadOfficeSirisId] ),
+        TREATAS( { "07L" }, FACT_ALLREPO[SLA_CateCode] ),
+        "Trades", COUNTROWS( FACT_ALLREPO ),
+        "CPYs", DISTINCTCOUNT( FACT_ALLREPO[HeadOfficeSirisId] ),
+        "CashAmount_EUR", SUM( FACT_ALLREPO[CashAmount_EUR] ),
+        "NotionalBond_EUR", SUM( FACT_ALLREPO[NotionalBond_EUR] )
+    )
+    ORDER BY FACT_ALLREPO[BuySell], [CashAmount_EUR] DESC
