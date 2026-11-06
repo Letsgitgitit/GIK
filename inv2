@@ -301,7 +301,7 @@ EVALUATE
         FACT_RECONC[SGC_UnitCode],
         TREATAS( { _rLastRc }, FACT_RECONC[SnapshotDate] ),
         TREATAS( _rHfIds, FACT_RECONC[HeadOfficeSirisId] ),
-        FILTER( ALL( FACT_RECONC[IsLigneTotal] ), FACT_RECONC[IsLigneTotal] = TRUE () ),
+        FILTER( ALL( FACT_RECONC[IsEnvelopeTotal] ), FACT_RECONC[IsEnvelopeTotal] = TRUE () ),
         "LastReconcDate", _rLastRc,
         "Auths", DISTINCTCOUNT( FACT_RECONC[AuthorisationId] ),
         "CPYs", DISTINCTCOUNT( FACT_RECONC[HeadOfficeSirisId] ),
@@ -314,6 +314,7 @@ EVALUATE
 EVALUATE
     SUMMARIZECOLUMNS(
         FACT_ALLREPO[BuySell],
+        FACT_ALLREPO[InstLabel],
         FACT_ALLREPO[CDR_BOPCCode],
         TREATAS( { _rLastRp }, FACT_ALLREPO[SnapshotDate] ),
         TREATAS( _rHfIds, FACT_ALLREPO[HeadOfficeSirisId] ),
@@ -324,3 +325,4 @@ EVALUATE
         "NotionalBond_EUR", SUM( FACT_ALLREPO[NotionalBond_EUR] )
     )
     ORDER BY FACT_ALLREPO[BuySell], [CashAmount_EUR] DESC
+
