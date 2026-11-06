@@ -1,5 +1,5 @@
 // =====================================================================================
-// P6A_PREFLIGHT.dax  -  BUILD 2026-11-06a  -  read-only, changes nothing.
+// P6A_PREFLIGHT.dax  -  BUILD 2026-11-06b  -  read-only, changes nothing.
 // Contract: P6A_LAYOUT_AND_CONTRACT.md v1.1, Part C. Run AFTER P6W_SETUP.dax (S0–S5 passed).
 //
 // HOW TO RUN: DAX Studio (preferred: Server Timings on, for the PF-06 / PF-07 timings) or Desktop DAX query view.
@@ -19,6 +19,7 @@
 //   PF-08  As-of table and compare dates (1D / 1W / 1M) per fact on the latest date
 //   PF-09  Envelopes crossing the scope boundary (holder or member outside the scope; envelope spanning 2+ CPHs)
 //   PF-10  FACT_LIMIT_16A[Rating] values in scope (for the rating order table)
+// 06b: GROUPBY now holds only SUMX / MAXX / COUNTX over CURRENTGROUP(); lists and ratios are added after it.
 // PF-11 (visual timings) runs at step 6, once the measures exist.
 // If one block errors, the whole run stops: comment that EVALUATE out (select > Ctrl+/) and flag the message.
 // Scope = DIM_COUNTERPARTY[HF Scope] = "Hedge fund" (P6W_SETUP S2).
@@ -271,8 +272,10 @@ EVALUATE
                 "HcBlankRows", SUMX ( CURRENTGROUP (), [@HcBlank] ),
                 "HcOneRows", SUMX ( CURRENTGROUP (), [@HcOne] ),
                 "HcNum", SUMX ( CURRENTGROUP (), [@HcNum] ),
-                "HcDen", SUMX ( CURRENTGROUP (), [@HcDen] ),
-                "InstLabels", CONCATENATEX ( CURRENTGROUP (), FACT_ALLREPO[InstLabel], " · " ) ),
+                "HcDen", SUMX ( CURRENTGROUP (), [@HcDen] ) ),
+            "InstLabels",
+                VAR sp = [@Sp] VAR bs = FACT_ALLREPO[BuySell]
+                RETURN CONCATENATEX ( FILTER ( qCells, [@Sp] = sp && FACT_ALLREPO[BuySell] = bs ), FACT_ALLREPO[InstLabel], " · " ),
             "Side", SWITCH ( FACT_ALLREPO[BuySell], "B", "17A repo (we post)", "S", "17B reverse repo (we receive)", "?" ),
             "HcWeighted", DIVIDE ( [HcNum], [HcDen] )
         )
@@ -295,11 +298,16 @@ EVALUATE
             RETURN IF ( ISBLANK ( r ), "No bond detail",
                 COALESCE ( LOOKUPVALUE ( 'P6W Rating Map'[Bucket], 'P6W Rating Map'[Rating_ssj], r ), "NOT IN MAP" ) ) )
     RETURN
-        GROUPBY ( qTagged, [@Bucket],
-            "Ratings", CONCATENATEX ( CURRENTGROUP (), COALESCE ( FACT_ALLREPO[Rating_ssj], "(blank)" ), " · " ),
-            "Face_EUR", SUMX ( CURRENTGROUP (), [@Face] ),
-            "Rows", SUMX ( CURRENTGROUP (), [@Rows] ),
-            "IssuersMax", MAXX ( CURRENTGROUP (), [@Issuers] ) )
+        ADDCOLUMNS (
+            GROUPBY ( qTagged, [@Bucket],
+                "Face_EUR", SUMX ( CURRENTGROUP (), [@Face] ),
+                "Rows", SUMX ( CURRENTGROUP (), [@Rows] ),
+                "IssuersMax", MAXX ( CURRENTGROUP (), [@Issuers] ) ),
+            "Ratings",
+                VAR bk = [@Bucket]
+                RETURN CONCATENATEX ( FILTER ( qTagged, [@Bucket] = bk ),
+                    IF ( ISBLANK ( FACT_ALLREPO[Rating_ssj] ), "(blank)", FACT_ALLREPO[Rating_ssj] ), " · " )
+        )
     ORDER BY [@Bucket]
 
 // ---- PF-06 R over time: S-side face by month-end × rating bucket since 2023 ---------------------------------------------
@@ -330,9 +338,11 @@ EVALUATE
             RETURN IF ( ISBLANK ( r ), "No bond detail",
                 COALESCE ( LOOKUPVALUE ( 'P6W Rating Map'[Bucket], 'P6W Rating Map'[Rating_ssj], r ), "NOT IN MAP" ) ) )
     RETURN
-        GROUPBY ( qTagged, DIM_DATE[YearMonth], [@ME], [@Bucket],
-            "Face_EUR", SUMX ( CURRENTGROUP (), [@Face] ),
-            "WtdHaircut", DIVIDE ( SUMX ( CURRENTGROUP (), [@HcFace] ), SUMX ( CURRENTGROUP (), [@Face] ) ) )
+        ADDCOLUMNS (
+            GROUPBY ( qTagged, DIM_DATE[YearMonth], [@ME], [@Bucket],
+                "Face_EUR", SUMX ( CURRENTGROUP (), [@Face] ),
+                "HcFace", SUMX ( CURRENTGROUP (), [@HcFace] ) ),
+            "WtdHaircut", DIVIDE ( [HcFace], [Face_EUR] ) )
     ORDER BY DIM_DATE[YearMonth], [@Bucket]
 
 // ---- PF-07a live HF deals by maturity bucket × family (SA-CCR proxy) ------------------------------------------------------
