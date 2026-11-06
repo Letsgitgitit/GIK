@@ -1,3 +1,10 @@
+// =====================================================================================
+// P6A_MEASURES_CHECK.dax  -  BUILD 2026-11-06b  -  read-only, after P6A_MEASURES_TE2.csx (+ Ctrl+S)
+// Runs the P6 measures the way the page will (scope slicer = Hedge fund, nothing picked in As of = latest).
+// One result tab per EVALUATE. Targets (4 Nov 2026, P6A_PREFLIGHT_RESULTS.md) in each header.
+// If 'P1 Source' does not hold the value "Facts", change _kFacts below to the facts value C1 lists.
+// If a block errors, comment it out (select > Ctrl+/) and flag the message; C0 lists measures that do not compile.
+// =====================================================================================
 
 DEFINE
     VAR _kFacts = "Facts"
@@ -110,7 +117,8 @@ EVALUATE
 
 // ---- C11 T: last 15 calendar days (util / limit on file days, markers) ------------------------------------------------------
 EVALUATE
-    VAR _d = CALCULATETABLE ( VALUES ( DIM_DATE[Date] ), DIM_DATE[Date] > [P6 Latest] - 15, DIM_DATE[Date] <= [P6 Latest] )
+    VAR _l = [P6 Latest]
+    VAR _d = CALCULATETABLE ( VALUES ( DIM_DATE[Date] ), DIM_DATE[Date] > _l - 15, DIM_DATE[Date] <= _l )
     RETURN
         SUMMARIZECOLUMNS ( DIM_DATE[Date], _d, _kScope,
             "Util", [P6 T Util], "Limit", [P6 T Limit], "LastMarker", [P6 T Last Marker], "NAVMarker", [P6 T NAV Marker] )
