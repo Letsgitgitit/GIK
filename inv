@@ -1,0 +1,251 @@
+DEFINE
+    VAR _p6Last16 = CALCULATE( MAX( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS() )
+    VAR _p6Last06 = CALCULATE( MAX( FACT_LIMIT_06[SnapshotDate] ), REMOVEFILTERS() )
+    VAR _p6LastRp = CALCULATE( MAX( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS() )
+    VAR _p6HfIds =
+        CALCULATETABLE(
+            VALUES( FACT_LIMIT_16A[HeadOfficeSirisId] ),
+            REMOVEFILTERS(),
+            FACT_LIMIT_16A[SnapshotDate] = _p6Last16,
+            FACT_LIMIT_16A[Sector] = "Hedge Fund"
+        )
+
+// ---- Q1 schema ---------------------------------------------------------------------------
+EVALUATE
+    FILTER(
+        INFO.VIEW.COLUMNS(),
+        [Table] IN { "FACT_LIMIT_16A", "FACT_LIMIT_06", "FACT_ALLREPO", "DIM_COUNTERPARTY", "DIM_MCG" }
+    )
+    ORDER BY [Table], [Name]
+
+// ---- Q2 HF scope at the last 16A date   [may error: DIM_COUNTERPARTY[MCG_Code]] -------------
+//      Which definition of "hedge fund" to use: 16A Sector = "Hedge Fund", MCG41, or both. Util = per-auth MAX.
+EVALUATE
+    VAR base =
+        FILTER(
+            CALCULATETABLE(
+                SUMMARIZE( FACT_LIMIT_16A, FACT_LIMIT_16A[Sector], DIM_COUNTERPARTY[MCG_Code] ),
+                REMOVEFILTERS(),
+                FACT_LIMIT_16A[SnapshotDate] = _p6Last16,
+                FACT_LIMIT_16A[StructureType] <> "No authorisation"
+            ),
+            CONTAINSSTRING( FACT_LIMIT_16A[Sector], "Fund" ) || DIM_COUNTERPARTY[MCG_Code] IN { "MCG41", "MCG44" }
+        )
+    RETURN
+        ADDCOLUMNS(
+            base,
+            "CPYs", CALCULATE( DISTINCTCOUNT( FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[SnapshotDate] = _p6Last16 ),
+            "CPHs", CALCULATE( DISTINCTCOUNT( DIM_COUNTERPARTY[CPH_Id] ), FACT_LIMIT_16A[SnapshotDate] = _p6Last16 ),
+            "Util16A_EUR",
+                CALCULATE(
+                    SUMX( VALUES( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE( MAX( FACT_LIMIT_16A[Utilisation] ) ) ),
+                    FACT_LIMIT_16A[SnapshotDate] = _p6Last16, FACT_LIMIT_16A[StructureType] <> "No authorisation" ),
+            "Auth16A_EUR",
+                CALCULATE(
+                    SUMX( VALUES( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE( MAX( FACT_LIMIT_16A[Amount] ) ) ),
+                    FACT_LIMIT_16A[SnapshotDate] = _p6Last16, FACT_LIMIT_16A[StructureType] <> "No authorisation" )
+        )
+    ORDER BY [Util16A_EUR] DESC
+
+// ---- Q3 tenor-band labels on HF rows, last date ---------------------------------------------
+//      Band k: label, rows, auths, MAX band util summed per auth. Labels decide the fixed buckets on C.
+EVALUATE
+    VAR hfRows =
+        CALCULATETABLE( FACT_LIMIT_16A, REMOVEFILTERS(), FACT_LIMIT_16A[SnapshotDate] = _p6Last16,
+            TREATAS( _p6HfIds, FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[StructureType] <> "No authorisation" )
+    VAR b1 = SELECTCOLUMNS( hfRows, "Band", 1, "Label", FACT_LIMIT_16A[Timebucket1], "Auth", FACT_LIMIT_16A[AuthorisationId], "Util", FACT_LIMIT_16A[UtilisationTB1] )
+    VAR b2 = SELECTCOLUMNS( hfRows, "Band", 2, "Label", FACT_LIMIT_16A[Timebucket2], "Auth", FACT_LIMIT_16A[AuthorisationId], "Util", FACT_LIMIT_16A[UtilisationTB2] )
+    VAR b3 = SELECTCOLUMNS( hfRows, "Band", 3, "Label", FACT_LIMIT_16A[Timebucket3], "Auth", FACT_LIMIT_16A[AuthorisationId], "Util", FACT_LIMIT_16A[UtilisationTB3] )
+    VAR b4 = SELECTCOLUMNS( hfRows, "Band", 4, "Label", FACT_LIMIT_16A[Timebucket4], "Auth", FACT_LIMIT_16A[AuthorisationId], "Util", FACT_LIMIT_16A[UtilisationTB4] )
+    VAR b5 = SELECTCOLUMNS( hfRows, "Band", 5, "Label", FACT_LIMIT_16A[Timebucket5], "Auth", FACT_LIMIT_16A[AuthorisationId], "Util", FACT_LIMIT_16A[UtilisationTB5] )
+    VAR b6 = SELECTCOLUMNS( hfRows, "Band", 6, "Label", FACT_LIMIT_16A[Timebucket6], "Auth", FACT_LIMIT_16A[AuthorisationId], "Util", FACT_LIMIT_16A[UtilisationTB6] )
+    VAR allB = UNION( b1, b2, b3, b4, b5, b6 )
+    RETURN
+        GROUPBY(
+            allB, [Band], [Label],
+            "Rows", COUNTX( CURRENTGROUP(), 1 ),
+            "MaxUtil", MAXX( CURRENTGROUP(), [Util] ),
+            "SumUtilRows", SUMX( CURRENTGROUP(), [Util] )
+        )
+    ORDER BY [Band], [Rows] DESC
+
+// ---- Q4 tenor-band nesting checks, HF, last date ---------------------------------------------
+EVALUATE
+    VAR hfRows =
+        CALCULATETABLE( FACT_LIMIT_16A, REMOVEFILTERS(), FACT_LIMIT_16A[SnapshotDate] = _p6Last16,
+            TREATAS( _p6HfIds, FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[StructureType] <> "No authorisation" )
+    RETURN
+        ROW(
+            "HfRows", COUNTROWS( hfRows ),
+            "HfAuths", COUNTROWS( SUMMARIZE( hfRows, FACT_LIMIT_16A[AuthorisationId] ) ),
+            "RowsAllBandsZeroOrBlank",
+                COUNTROWS( FILTER( hfRows,
+                    COALESCE( FACT_LIMIT_16A[UtilisationTB1], 0 ) + COALESCE( FACT_LIMIT_16A[UtilisationTB2], 0 )
+                    + COALESCE( FACT_LIMIT_16A[UtilisationTB3], 0 ) + COALESCE( FACT_LIMIT_16A[UtilisationTB4], 0 )
+                    + COALESCE( FACT_LIMIT_16A[UtilisationTB5], 0 ) + COALESCE( FACT_LIMIT_16A[UtilisationTB6], 0 ) = 0 ) ),
+            "RowsAllBandsZero_UtilPositive",
+                COUNTROWS( FILTER( hfRows, FACT_LIMIT_16A[Utilisation] > 0 &&
+                    COALESCE( FACT_LIMIT_16A[UtilisationTB1], 0 ) + COALESCE( FACT_LIMIT_16A[UtilisationTB2], 0 )
+                    + COALESCE( FACT_LIMIT_16A[UtilisationTB3], 0 ) + COALESCE( FACT_LIMIT_16A[UtilisationTB4], 0 )
+                    + COALESCE( FACT_LIMIT_16A[UtilisationTB5], 0 ) + COALESCE( FACT_LIMIT_16A[UtilisationTB6], 0 ) = 0 ) ),
+            "RowsBandAboveTotal",
+                COUNTROWS( FILTER( hfRows,
+                    MAX( MAX( MAX( COALESCE( FACT_LIMIT_16A[UtilisationTB1], 0 ), COALESCE( FACT_LIMIT_16A[UtilisationTB2], 0 ) ),
+                              MAX( COALESCE( FACT_LIMIT_16A[UtilisationTB3], 0 ), COALESCE( FACT_LIMIT_16A[UtilisationTB4], 0 ) ) ),
+                         MAX( COALESCE( FACT_LIMIT_16A[UtilisationTB5], 0 ), COALESCE( FACT_LIMIT_16A[UtilisationTB6], 0 ) ) )
+                    > FACT_LIMIT_16A[Utilisation] * 1.001 ) ),
+            "RowsBandUtilButNoLabel",
+                COUNTROWS( FILTER( hfRows,
+                    ( COALESCE( FACT_LIMIT_16A[UtilisationTB1], 0 ) > 0 && LEN( FACT_LIMIT_16A[Timebucket1] ) = 0 )
+                    || ( COALESCE( FACT_LIMIT_16A[UtilisationTB2], 0 ) > 0 && LEN( FACT_LIMIT_16A[Timebucket2] ) = 0 )
+                    || ( COALESCE( FACT_LIMIT_16A[UtilisationTB3], 0 ) > 0 && LEN( FACT_LIMIT_16A[Timebucket3] ) = 0 ) ) ),
+            "RowsTB1DecreasingTB2",
+                COUNTROWS( FILTER( hfRows, COALESCE( FACT_LIMIT_16A[UtilisationTB2], 0 ) > COALESCE( FACT_LIMIT_16A[UtilisationTB1], 0 ) ) )
+        )
+
+// ---- Q5 MtM on envelopes, HF, last date -----------------------------------------------------
+//      Same value on every member (like Utilisation) -> aggregate per auth with MAX; different -> per-CPY own MtM.
+EVALUATE
+    VAR envAuth =
+        ADDCOLUMNS(
+            CALCULATETABLE( SUMMARIZE( FACT_LIMIT_16A, FACT_LIMIT_16A[AuthorisationId] ), REMOVEFILTERS(),
+                FACT_LIMIT_16A[SnapshotDate] = _p6Last16, FACT_LIMIT_16A[StructureType] = "Envelope",
+                TREATAS( _p6HfIds, FACT_LIMIT_16A[HeadOfficeSirisId] ) ),
+            "@Members", CALCULATE( DISTINCTCOUNT( FACT_LIMIT_16A[HeadOfficeSirisId] ),
+                FACT_LIMIT_16A[SnapshotDate] = _p6Last16 ),
+            "@UtilVals", CALCULATE( DISTINCTCOUNT( FACT_LIMIT_16A[Utilisation] ), FACT_LIMIT_16A[SnapshotDate] = _p6Last16 ),
+            "@MtMVals", CALCULATE( DISTINCTCOUNT( FACT_LIMIT_16A[MtM] ), FACT_LIMIT_16A[SnapshotDate] = _p6Last16 ),
+            "@MtMBOVals", CALCULATE( DISTINCTCOUNT( FACT_LIMIT_16A[MtM_BO_EUR] ), FACT_LIMIT_16A[SnapshotDate] = _p6Last16 ),
+            "@SumMtMBO", CALCULATE( SUM( FACT_LIMIT_16A[MtM_BO_EUR] ), FACT_LIMIT_16A[SnapshotDate] = _p6Last16 ),
+            "@MaxMtMBO", CALCULATE( MAX( FACT_LIMIT_16A[MtM_BO_EUR] ), FACT_LIMIT_16A[SnapshotDate] = _p6Last16 )
+        )
+    RETURN
+        UNION(
+            ROW( "Item", "HF envelope auths", "Value", COUNTROWS( envAuth ) ),
+            ROW( "Item", "  with > 1 member", "Value", COUNTROWS( FILTER( envAuth, [@Members] > 1 ) ) ),
+            ROW( "Item", "  multi-member, one Utilisation value (expected: all)", "Value", COUNTROWS( FILTER( envAuth, [@Members] > 1 && [@UtilVals] = 1 ) ) ),
+            ROW( "Item", "  multi-member, one MtM value", "Value", COUNTROWS( FILTER( envAuth, [@Members] > 1 && [@MtMVals] = 1 ) ) ),
+            ROW( "Item", "  multi-member, one MtM_BO_EUR value", "Value", COUNTROWS( FILTER( envAuth, [@Members] > 1 && [@MtMBOVals] = 1 ) ) ),
+            ROW( "Item", "Sum over members of MtM_BO_EUR (EUR)", "Value", SUMX( envAuth, [@SumMtMBO] ) ),
+            ROW( "Item", "Sum over auths of MAX MtM_BO_EUR (EUR)", "Value", SUMX( envAuth, [@MaxMtMBO] ) ),
+            ROW( "Item", "HF rows MtM_BO_EUR > 0 (all structures)", "Value",
+                CALCULATE( COUNTROWS( FACT_LIMIT_16A ), REMOVEFILTERS(), FACT_LIMIT_16A[SnapshotDate] = _p6Last16,
+                    TREATAS( _p6HfIds, FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[MtM_BO_EUR] > 0 ) ),
+            ROW( "Item", "HF rows MtM <> MtM_BO_EUR", "Value",
+                COUNTROWS( FILTER(
+                    CALCULATETABLE( FACT_LIMIT_16A, REMOVEFILTERS(), FACT_LIMIT_16A[SnapshotDate] = _p6Last16,
+                        TREATAS( _p6HfIds, FACT_LIMIT_16A[HeadOfficeSirisId] ) ),
+                    ABS( COALESCE( FACT_LIMIT_16A[MtM], 0 ) - COALESCE( FACT_LIMIT_16A[MtM_BO_EUR], 0 ) ) > 1 ) ) )
+        )
+
+// ---- Q6 HF 16A by CPH, last date, top 25 ----------------------------------------------------
+EVALUATE
+    TOPN(
+        25,
+        ADDCOLUMNS(
+            CALCULATETABLE( SUMMARIZE( FACT_LIMIT_16A, DIM_COUNTERPARTY[CPH_Id], DIM_COUNTERPARTY[CPH_Name] ), REMOVEFILTERS(),
+                FACT_LIMIT_16A[SnapshotDate] = _p6Last16, TREATAS( _p6HfIds, FACT_LIMIT_16A[HeadOfficeSirisId] ) ),
+            "CPYs", CALCULATE( DISTINCTCOUNT( FACT_LIMIT_16A[HeadOfficeSirisId] ), REMOVEFILTERS( FACT_LIMIT_16A ),
+                FACT_LIMIT_16A[SnapshotDate] = _p6Last16, TREATAS( _p6HfIds, FACT_LIMIT_16A[HeadOfficeSirisId] ) ),
+            "Util16A_EUR",
+                CALCULATE(
+                    SUMX( VALUES( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE( MAX( FACT_LIMIT_16A[Utilisation] ) ) ),
+                    REMOVEFILTERS( FACT_LIMIT_16A ), FACT_LIMIT_16A[SnapshotDate] = _p6Last16,
+                    TREATAS( _p6HfIds, FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[StructureType] <> "No authorisation" ),
+            "Auth16A_EUR",
+                CALCULATE(
+                    SUMX( VALUES( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE( MAX( FACT_LIMIT_16A[Amount] ) ) ),
+                    REMOVEFILTERS( FACT_LIMIT_16A ), FACT_LIMIT_16A[SnapshotDate] = _p6Last16,
+                    TREATAS( _p6HfIds, FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[StructureType] <> "No authorisation" ),
+            "Structures", CALCULATE( CONCATENATEX( VALUES( FACT_LIMIT_16A[StructureType] ), FACT_LIMIT_16A[StructureType], "/" ),
+                REMOVEFILTERS( FACT_LIMIT_16A ), FACT_LIMIT_16A[SnapshotDate] = _p6Last16, TREATAS( _p6HfIds, FACT_LIMIT_16A[HeadOfficeSirisId] ) )
+        ),
+        [Util16A_EUR], DESC
+    )
+    ORDER BY [Util16A_EUR] DESC
+
+// ---- Q7 ALLREPO HF, last date ----------------------------------------------------------------
+EVALUATE
+    ADDCOLUMNS(
+        CALCULATETABLE( VALUES( FACT_ALLREPO[BuySell] ), REMOVEFILTERS(), FACT_ALLREPO[SnapshotDate] = _p6LastRp,
+            TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ),
+        "LastRepoDate", _p6LastRp,
+        "Rows", CALCULATE( COUNTROWS( FACT_ALLREPO ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ),
+        "CPYs", CALCULATE( DISTINCTCOUNT( FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ),
+        "CashAmount_EUR", CALCULATE( SUM( FACT_ALLREPO[CashAmount_EUR] ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ),
+        "MTMSecurity_EUR", CALCULATE( SUM( FACT_ALLREPO[MTMSecurity_EUR] ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ),
+        "RiskBrut_EUR", CALCULATE( SUM( FACT_ALLREPO[RiskBrut_EUR] ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ),
+        "RiskNet_EUR", CALCULATE( SUM( FACT_ALLREPO[RiskNet_EUR] ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ),
+        "HaircutEq1Rows", CALCULATE( COUNTROWS( FACT_ALLREPO ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[Haircut] = 1 ),
+        "HaircutBlankRows", CALCULATE( COUNTROWS( FACT_ALLREPO ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ), ISBLANK( FACT_ALLREPO[Haircut] ) ),
+        "HaircutMin", CALCULATE( MIN( FACT_ALLREPO[Haircut] ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ),
+        "HaircutMax_excl1", CALCULATE( MAX( FACT_ALLREPO[Haircut] ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[Haircut] < 1 ),
+        "WtdHaircut_excl1",
+            DIVIDE(
+                CALCULATE( SUMX( FACT_ALLREPO, FACT_ALLREPO[Haircut] * ABS( FACT_ALLREPO[MTMSecurity_EUR] ) ),
+                    FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[Haircut] < 1 ),
+                CALCULATE( SUMX( FACT_ALLREPO, ABS( FACT_ALLREPO[MTMSecurity_EUR] ) ),
+                    FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[Haircut] < 1 ) ),
+        "IssuerUnknownRows", CALCULATE( COUNTROWS( FACT_ALLREPO ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ),
+            CONTAINSSTRING( FACT_ALLREPO[IssuerId], "#" ) ),
+        "Issuers", CALCULATE( DISTINCTCOUNT( FACT_ALLREPO[IssuerId] ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) )
+    )
+
+// ---- Q8 HF reverse repo by month since 2023 (cost test, R "over time") ------------------------
+//      Month-end snapshot per month. If > 60 s: the R history view needs a small monthly gold aggregate.
+EVALUATE
+    VAR monthEnds =
+        CALCULATETABLE(
+            ADDCOLUMNS( VALUES( DIM_DATE[YearMonth] ), "@ME", CALCULATE( MAX( FACT_ALLREPO[SnapshotDate] ) ) ),
+            REMOVEFILTERS(), DIM_DATE[Date] >= DATE( 2023, 1, 1 ), DIM_DATE[Date] <= _p6LastRp
+        )
+    RETURN
+        ADDCOLUMNS(
+            FILTER( monthEnds, NOT ISBLANK( [@ME] ) ),
+            "Collateral_EUR",
+                VAR d = [@ME]
+                RETURN CALCULATE( SUM( FACT_ALLREPO[MTMSecurity_EUR] ), REMOVEFILTERS(), FACT_ALLREPO[SnapshotDate] = d,
+                    FACT_ALLREPO[BuySell] = "B", TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ),
+            "WtdHaircut",
+                VAR d = [@ME]
+                RETURN DIVIDE(
+                    CALCULATE( SUMX( FACT_ALLREPO, FACT_ALLREPO[Haircut] * ABS( FACT_ALLREPO[MTMSecurity_EUR] ) ), REMOVEFILTERS(),
+                        FACT_ALLREPO[SnapshotDate] = d, FACT_ALLREPO[BuySell] = "B", FACT_ALLREPO[Haircut] < 1,
+                        TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ),
+                    CALCULATE( SUMX( FACT_ALLREPO, ABS( FACT_ALLREPO[MTMSecurity_EUR] ) ), REMOVEFILTERS(),
+                        FACT_ALLREPO[SnapshotDate] = d, FACT_ALLREPO[BuySell] = "B", FACT_ALLREPO[Haircut] < 1,
+                        TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ) ),
+            "CPYs",
+                VAR d = [@ME]
+                RETURN CALCULATE( DISTINCTCOUNT( FACT_ALLREPO[HeadOfficeSirisId] ), REMOVEFILTERS(), FACT_ALLREPO[SnapshotDate] = d,
+                    FACT_ALLREPO[BuySell] = "B", TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) )
+        )
+    ORDER BY DIM_DATE[YearMonth]
+
+// ---- Q9 Rating_ssj values on HF reverse repo collateral, last date ---------------------------
+EVALUATE
+    ADDCOLUMNS(
+        CALCULATETABLE( VALUES( FACT_ALLREPO[Rating_ssj] ), REMOVEFILTERS(), FACT_ALLREPO[SnapshotDate] = _p6LastRp,
+            FACT_ALLREPO[BuySell] = "B", TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ),
+        "Rows", CALCULATE( COUNTROWS( FACT_ALLREPO ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, FACT_ALLREPO[BuySell] = "B",
+            TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) ),
+        "Collateral_EUR", CALCULATE( SUM( FACT_ALLREPO[MTMSecurity_EUR] ), FACT_ALLREPO[SnapshotDate] = _p6LastRp, FACT_ALLREPO[BuySell] = "B",
+            TREATAS( _p6HfIds, FACT_ALLREPO[HeadOfficeSirisId] ) )
+    )
+    ORDER BY [Collateral_EUR] DESC
+
+// ---- Q10 06 HF, last date -----------------------------------------------------------------------
+EVALUATE
+    ADDCOLUMNS(
+        CALCULATETABLE( SUMMARIZE( FACT_LIMIT_06, FACT_LIMIT_06[StructureType], FACT_LIMIT_06[Comment] ), REMOVEFILTERS(),
+            FACT_LIMIT_06[SnapshotDate] = _p6Last06, TREATAS( _p6HfIds, FACT_LIMIT_06[HeadOfficeSirisId] ) ),
+        "Last06Date", _p6Last06,
+        "Rows", CALCULATE( COUNTROWS( FACT_LIMIT_06 ), FACT_LIMIT_06[SnapshotDate] = _p6Last06, TREATAS( _p6HfIds, FACT_LIMIT_06[HeadOfficeSirisId] ) ),
+        "CPYs", CALCULATE( DISTINCTCOUNT( FACT_LIMIT_06[HeadOfficeSirisId] ), FACT_LIMIT_06[SnapshotDate] = _p6Last06, TREATAS( _p6HfIds, FACT_LIMIT_06[HeadOfficeSirisId] ) ),
+        "Util06_EUR",
+            CALCULATE( SUMX( VALUES( FACT_LIMIT_06[AuthorisationId] ), CALCULATE( MAX( FACT_LIMIT_06[Utilisation] ) ) ),
+                FACT_LIMIT_06[SnapshotDate] = _p6Last06, TREATAS( _p6HfIds, FACT_LIMIT_06[HeadOfficeSirisId] ) ),
+        "AvailableNegRows", CALCULATE( COUNTROWS( FACT_LIMIT_06 ), FACT_LIMIT_06[SnapshotDate] = _p6Last06,
+            TREATAS( _p6HfIds, FACT_LIMIT_06[HeadOfficeSirisId] ), FACT_LIMIT_06[Available] < 0 )
+    )
+    ORDER BY [Rows] DESC
