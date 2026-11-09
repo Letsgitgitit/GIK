@@ -1,0 +1,77 @@
+// =====================================================================================
+// P6A_X_CHECK.dax  -  BUILD 2026-11-07a  -  read-only, after P6W_SETUP_PATCH_03 + measures build 07a.
+// X1 / X2 activity cards and the K4 tooltip trend. One tab per EVALUATE. Note the run time of X1 and X2 (DAX Studio
+// Server Timings): the activity measures scan Sales and ALLREPO several times; > 2 s per visual = flag it.
+//   XC0  P6 measures in error (expect none)
+//   XC1  data behind the cards: last sales date, window end, Sales / ALLREPO coverage of the fields used
+//   XC2  X1 for every product × window (what the card shows after each click), HF scope, facts
+//   XC3  X2 matrix (FX, Rates, Credit, Rev repo × notional / deals / tenor), 1 week
+//   XC4  repo source check: ALLREPO new trades by TradeDate vs Sales GRI FIXED INCOME deals, last 12 weeks, HF scope
+//   XC5  K4 tooltip: 17A / 17B used % on the last 10 days
+// =====================================================================================
+
+DEFINE
+    VAR _kScope = TREATAS ( { "Hedge fund" }, DIM_COUNTERPARTY[HF Scope] )
+
+EVALUATE
+    SELECTCOLUMNS ( FILTER ( INFO.MEASURES (), LEFT ( [Name], 3 ) = "P6 " && [State] <> 1 ),
+        "Measure", [Name], "Error", [ErrorMessage] )
+
+EVALUATE
+    VAR _e = [P6 X End]
+    RETURN
+        ROW (
+            "AsOf", [P6 AsOf], "LastSalesDeal", CALCULATE ( MAX ( FACT_SALES[DealDate] ), REMOVEFILTERS () ), "WindowEnd", _e,
+            "AllrepoTradeDateBlank", CALCULATE ( COUNTROWS ( FACT_ALLREPO ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _e, ISBLANK ( FACT_ALLREPO[TradeDate] ) ) + 0,
+            "AllrepoTxnBlank", CALCULATE ( COUNTROWS ( FACT_ALLREPO ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _e, ISBLANK ( FACT_ALLREPO[TransactionId] ) ) + 0,
+            "AllrepoMatBlank", CALCULATE ( COUNTROWS ( FACT_ALLREPO ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _e, ISBLANK ( FACT_ALLREPO[MaturityDate] ) ) + 0,
+            "SalesMatBlank_12w", CALCULATE ( COUNTROWS ( FACT_SALES ), REMOVEFILTERS (), FACT_SALES[DealDate] > _e - 84, FACT_SALES[DealDate] <= _e, ISBLANK ( FACT_SALES[MaturityDate] ) ) + 0,
+            "SalesRows_12w", CALCULATE ( COUNTROWS ( FACT_SALES ), REMOVEFILTERS (), FACT_SALES[DealDate] > _e - 84, FACT_SALES[DealDate] <= _e ) )
+
+EVALUATE
+    CALCULATETABLE (
+        ADDCOLUMNS (
+            CROSSJOIN ( VALUES ( 'P6W Activity Product'[Product] ), VALUES ( 'P6W Activity Window'[Weeks] ) ),
+            "Notional", [P6 X Notional], "Deals", [P6 X Deals], "NotionalBase", [P6 X Notional Base], "DealsBase", [P6 X Deals Base],
+            "NotionalΔ", [P6 X Notional Δ], "DealsΔ", [P6 X Deals Δ], "Tenor", [P6 X Tenor], "TenorNorm", [P6 X Tenor Norm],
+            "Line1", [P6 X1 Line 1] ),
+        _kScope )
+    ORDER BY 'P6W Activity Product'[Product], 'P6W Activity Window'[Weeks]
+
+EVALUATE
+    SUMMARIZECOLUMNS ( 'P6W X2 Row'[Row], 'P6W X2 Product'[Product], _kScope, TREATAS ( { 1 }, 'P6W Activity Window'[Weeks] ),
+        "Cell", [P6 X2 Cell], "Colour", [P6 X2 Cell Colour] )
+
+EVALUATE
+    VAR _e = [P6 X End]
+    VAR _sc = CALCULATETABLE ( VALUES ( DIM_COUNTERPARTY[HeadOfficeSirisId] ), REMOVEFILTERS (), DIM_COUNTERPARTY[HF Scope] = "Hedge fund" )
+    VAR _wk = ADDCOLUMNS ( GENERATESERIES ( 0, 11, 1 ), "@end", _e - 7 * [Value] )
+    RETURN
+        ADDCOLUMNS ( _wk,
+            "Allrepo_S_trades", VAR _we = [@end] VAR _ws = _we - 7 VAR _sx = _we + 5
+                RETURN CALCULATE ( DISTINCTCOUNT ( FACT_ALLREPO[TransactionId] ), REMOVEFILTERS (), TREATAS ( _sc, FACT_ALLREPO[HeadOfficeSirisId] ),
+                    FACT_ALLREPO[SLA_CateCode] = "07L", FACT_ALLREPO[BuySell] = "S", FACT_ALLREPO[TradeDate] > _ws, FACT_ALLREPO[TradeDate] <= _we,
+                    FACT_ALLREPO[SnapshotDate] > _ws, FACT_ALLREPO[SnapshotDate] <= _sx,
+                    KEEPFILTERS ( FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) ) ) ),
+            "Allrepo_B_trades", VAR _we = [@end] VAR _ws = _we - 7 VAR _sx = _we + 5
+                RETURN CALCULATE ( DISTINCTCOUNT ( FACT_ALLREPO[TransactionId] ), REMOVEFILTERS (), TREATAS ( _sc, FACT_ALLREPO[HeadOfficeSirisId] ),
+                    FACT_ALLREPO[SLA_CateCode] = "07L", FACT_ALLREPO[BuySell] = "B", FACT_ALLREPO[TradeDate] > _ws, FACT_ALLREPO[TradeDate] <= _we,
+                    FACT_ALLREPO[SnapshotDate] > _ws, FACT_ALLREPO[SnapshotDate] <= _sx,
+                    KEEPFILTERS ( FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) ) ) ),
+            "Sales_GRIFI_deals", VAR _we = [@end] VAR _ws = _we - 7
+                RETURN CALCULATE ( COUNTROWS ( FACT_SALES ), REMOVEFILTERS (), TREATAS ( _sc, FACT_SALES[RicosCode] ),
+                    FACT_SALES[ProductLineGroupName] = "GRI FIXED INCOME", FACT_SALES[DealDate] > _ws, FACT_SALES[DealDate] <= _we, FACT_SALES[IsRebooked] = FALSE () ),
+            "Sales_GRIFI_notional", VAR _we = [@end] VAR _ws = _we - 7
+                RETURN CALCULATE ( SUMX ( FACT_SALES, ABS ( FACT_SALES[NominalAmountEUR] ) ), REMOVEFILTERS (), TREATAS ( _sc, FACT_SALES[RicosCode] ),
+                    FACT_SALES[ProductLineGroupName] = "GRI FIXED INCOME", FACT_SALES[DealDate] > _ws, FACT_SALES[DealDate] <= _we, FACT_SALES[IsRebooked] = FALSE () ),
+            "Sales_GRIFI_tiny_notional", VAR _we = [@end] VAR _ws = _we - 7
+                RETURN CALCULATE ( COUNTROWS ( FACT_SALES ), REMOVEFILTERS (), TREATAS ( _sc, FACT_SALES[RicosCode] ),
+                    FACT_SALES[ProductLineGroupName] = "GRI FIXED INCOME", FACT_SALES[DealDate] > _ws, FACT_SALES[DealDate] <= _we,
+                    FACT_SALES[IsRebooked] = FALSE (), FACT_SALES[NominalAmountEUR] < 1000, FACT_SALES[NominalAmountEUR] > -1000 ) + 0 )
+    ORDER BY [Value]
+
+EVALUATE
+    VAR _l = [P6 Latest]
+    VAR _d = CALCULATETABLE ( VALUES ( DIM_DATE[Date] ), DIM_DATE[Date] > _l - 10, DIM_DATE[Date] <= _l )
+    RETURN SUMMARIZECOLUMNS ( DIM_DATE[Date], _d, _kScope, "17A_used", [P6 K4T 17A Used %], "17B_used", [P6 K4T 17B Used %] )
+    ORDER BY DIM_DATE[Date]
