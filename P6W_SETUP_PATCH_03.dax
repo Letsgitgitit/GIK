@@ -1,0 +1,37 @@
+// =====================================================================================
+// P6W_SETUP_PATCH_03.dax  -  BUILD 2026-11-07a  -  four small tables for the top-row activity cards X1 / X2
+// Run BEFORE P6A_MEASURES_TE2.csx build 07a (the script stops if any is missing).
+// HOW: Modeling ▸ New table ▸ paste one block ▸ Enter; repeat. Then for each: the label column ▸ Sort by column ▸ Order;
+//      hide Order (and Weeks). No relationship to anything (delete any line Desktop draws).
+// =====================================================================================
+
+P6W Activity Product =
+-- X1 product slicer. Code = the tile text; Product = the value the measures read. All = Rates + FX + Credit + Repo + Rev repo.
+DATATABLE (
+    "Code", STRING, "Product", STRING, "Order", INTEGER,
+    { { "All", "All", 1 }, { "Rt", "Rates", 2 }, { "Rp", "Repo", 3 }, { "RR", "Rev repo", 4 }, { "FX", "FX", 5 }, { "Cr", "Credit", 6 } }
+)
+
+P6W Activity Window =
+-- X1 / X2 window: last 1, 2, 4 or 8 weeks (default 1), compared with the average same-length block of the 12 weeks before.
+DATATABLE (
+    "Label", STRING, "Weeks", INTEGER, "Order", INTEGER,
+    { { "1", 1, 1 }, { "2", 2, 2 }, { "4", 4, 3 }, { "8", 8, 4 } }
+)
+
+P6W X2 Product =
+-- X2 matrix columns.
+DATATABLE (
+    "Product", STRING, "Order", INTEGER,
+    { { "FX", 1 }, { "Rates", 2 }, { "Credit", 3 }, { "Rev repo", 4 } }
+)
+
+P6W X2 Row =
+-- X2 matrix rows.
+DATATABLE (
+    "Row", STRING, "Order", INTEGER,
+    { { "notional", 1 }, { "deals", 2 }, { "tenor / norm", 3 } }
+)
+
+// Sort: P6W Activity Product[Code] by Order · P6W Activity Window[Label] by Order · P6W X2 Product[Product] by Order ·
+//       P6W X2 Row[Row] by Order.
