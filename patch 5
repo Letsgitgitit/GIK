@@ -160,3 +160,17 @@ UNION(
          "Netting NEW", CALCULATE( [17AB Netting % NEW], f, TREATAS( _NewTicks, 'P1 Unit'[Unit Code] ) ),
          "Unit Label", CALCULATE( [Unit Label], f, TREATAS( _NewTicks, 'P1 Unit'[Unit Code] ) ) )
 )
+
+
+
+
+
+Rev RpR Annual =
+-- Annualised revenue per €100k of average daily 16A utilisation, same window and selection.
+-- Comparable across window lengths: revenue scaled to 365 days, divided by the average level of risk.
+VAR s = [Rev Window Start]
+VAR e = [Rev Window End]
+VAR days = INT( e - s ) + 1
+RETURN
+    IF( days > 0,
+        DIVIDE( [Rev Revenue EUR] * 365 / days, [16A Avg Util] ) * 100000 )
