@@ -1,111 +1,162 @@
-// Grouping from the 9 Nov issuer listing (HF 17B collateral, 4 Nov): Sector_ssj "Government" / "Central Admin" = sovereign
-// debt (US Treasury, Italy, Germany, France, UK DMO, Japan, Spain …); Category_ssj starting "ACG" = public sector
-// (agencies, regions, public banks: FHLB, Fannie Mae, Ginnie Mae, Ontario, BPI, SFIL, CADES, Unedic …); Sector_ssj
-// "SupraNational" / "ECA" = supranationals and export agencies; everything else = corporates & financials.
+P1 PATCH 13 (Desktop only) - booking-centre info icon in CORTEX mode too + 17A / 17B netting line fix
+                                                                                                    BUILD 2026-11-10b
+=====================================================================================================================
+Replaces patch 12 (the "(!)" and info icon already work, so Unit Short / BC Flag 17AB are not needed; patch 12 can be
+ignored). Needs patch 10 in place. 2 measures REPLACED in table _Measures + 1 visual step. No table or column.
+
+REPLACE a measure : Data pane > _Measures > click it > formula bar > Ctrl+A > paste the block > Enter.
+Paste each block from its name line down to the line before the next ====. File > Save at the end.
+UNDO: reopen the .pbix saved before starting (save a copy first).
+
+Rule after this patch
+  - Info icon: shows whenever the selection has 17A / 17B lines in a booking centre that is NOT ticked in the
+    P1 Unit slicer, whatever the G1 source (CORTEX or facts) and whatever the Metric Focus. In CORTEX mode the
+    G1 figure itself covers every centre; the icon is there because the cards, E1 and F1 always read the facts.
+    Tooltip unchanged ([Unit Label]): "! Booking centres counted: ... · NOT counted: ...".
+  - G1 subtitle "(!)" unchanged: only when the G1 figure itself is on facts and leaves a centre out.
+  - Netting line: follows the ticked centres (none ticked = all), like the 17A / 17B base measures.
+
+==== 1/2  REPLACE
+BC Info Icon =
+-- Info icon next to the G1 subtitle: shows whenever the selection has 17A / 17B lines in a booking centre that is
+-- not ticked in the P1 Unit slicer (the cards, E1 and F1 leave those lines out), on CORTEX or facts, any Metric Focus.
+IF( LEFT( [Unit Label], 1 ) = "!", "ⓘ", "" )
+
+==== 2/2  REPLACE
+17AB Netting % =
+-- Share of gross 17A + 17B utilisation that offsets within each counterparty:
+-- per entity 2 x MIN( 17A, 17B ) / ( 17A + 17B ), summed over entities (never across counterparties).
+-- RECONC total lines; an authorisation = AuthorisationId + booking centre + category, counted once.
+-- Booking centres: those ticked in the P1 Unit slicer (none ticked = all), same rule as the base measures.
+-- (Was blank since patch 10: it compared SGC_UnitCode to [Unit Selected], which now returns "SET" / "ALL".)
+VAR d = [Snap RECONC]
+VAR uSet = VALUES( 'P1 Unit'[Unit Code] )
+VAR auths =
+    CALCULATETABLE(
+        SUMMARIZE( FACT_RECONC, FACT_RECONC[AuthorisationId], FACT_RECONC[SGC_UnitCode], FACT_RECONC[Category] ),
+        DIM_DATE[Date] = d,
+        FACT_RECONC[Category] IN { "17A", "17B" },
+        TREATAS( uSet, FACT_RECONC[SGC_UnitCode] ),
+        FACT_RECONC[IsNoAuthorisation] = FALSE (),
+        NOT ISBLANK( FACT_RECONC[AuthorisationId] )
+    )
+VAR perAuth =
+    CALCULATETABLE(
+        ADDCOLUMNS(
+            SUMMARIZE( FACT_RECONC, FACT_RECONC[HeadOfficeSirisId], FACT_RECONC[AuthorisationId],
+                       FACT_RECONC[SGC_UnitCode], FACT_RECONC[Category] ),
+            "@u", CALCULATE( MAX( FACT_RECONC[UtilEUR] ) ) ),
+        REMOVEFILTERS( DIM_COUNTERPARTY ),
+        TREATAS( auths, FACT_RECONC[AuthorisationId], FACT_RECONC[SGC_UnitCode], FACT_RECONC[Category] ),
+        DIM_DATE[Date] = d,
+        FACT_RECONC[IsEnvelopeTotal] = TRUE ()
+    )
+VAR perCpy =
+    GROUPBY( perAuth, FACT_RECONC[HeadOfficeSirisId],
+        "@a", SUMX( CURRENTGROUP (), IF( FACT_RECONC[Category] = "17A", [@u] ) ),
+        "@b", SUMX( CURRENTGROUP (), IF( FACT_RECONC[Category] = "17B", [@u] ) ) )
+VAR grossUtil = SUMX( perCpy, [@a] + [@b] )
+VAR offsetUtil = SUMX( perCpy, 2 * MIN( [@a], [@b] ) )
+RETURN
+    IF( NOT ISBLANK( d ), DIVIDE( offsetUtil, grossUtil ) )
+
+==== VISUAL STEP - P1 Unit slicer default: 10 / 2140 / 2155 / 2164 / 2195
+1. Tick 10, 2140, 2155, 2164 and 2195 on the P1 Unit slicer (4906 / 4921 stay off: separate booking centres).
+2. View > Bookmarks: any bookmark that captures this slicer -> set the ticks, then ... > Update.
+3. File > Save.
+
+==== CHECKS
+C1 Run P1_PATCH_12_CHECK.dax (still valid): C0 should list no measure with "Compares a code to it = yes" after
+   this patch; C1 "New netting" between 0 and 100 % on the last 5 dates.
+C2 G2 = CORTEX, Metric 17A, CPY-HF selected, untick 2155 -> icon shows, tooltip "... NOT counted: 2155";
+   G1 subtitle stays "CORTEX · ..." with no "(!)". Re-tick 2155 -> icon disappears.
+C3 E1: the dashed green netting line is back. CPY-A (0000000785) blank if it has no 17A / 17B utilisation.
+
+
+
+
+
+
+
+
 // =====================================================================================
+// P1_PATCH_12_CHECK.dax  -  BUILD 2026-11-10a  -  read-only
+// C0 before the patch (which measures still compare a centre code to [Unit Selected]).
+// C1 / C2 run the NEW netting measure query-scoped, so they work before or after the patch.
+// RUN: DAX query view > paste > Run. 3 result tabs. Ids only in the output.
+// =====================================================================================
+DEFINE
+    VAR _Id = "0001228674"                                       // CPY-HF (generic label)
+    VAR _OldTicks = { "10", "2155", "2164" }                     // patch 10 default
+    VAR _NewTicks = { "10", "2140", "2155", "2164", "2195" }     // patch 12 default
+    VAR _Last5 = TOPN( 5, VALUES( FACT_RECONC[SnapshotDate] ), FACT_RECONC[SnapshotDate], DESC )
 
-// ---- S1 Modeling ▸ New table ▸ paste ▸ Enter. Then [Group] ▸ Sort by column ▸ Group Order. Hide Group Order,
-//         IssuerId, Country, Sector, Category. No relationship.
-
-P6W Issuer Map =
-VAR im_rows =
-    CALCULATETABLE (
-        SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[IssuerId], FACT_ALLREPO[IssuerName], FACT_ALLREPO[Sector_ssj],
-            FACT_ALLREPO[Category_ssj], FACT_ALLREPO[Country_ssj] ),
-        REMOVEFILTERS () )
-VAR im_one =
-    GROUPBY ( im_rows, FACT_ALLREPO[IssuerId],
-        "IssuerName", MAXX ( CURRENTGROUP (), FACT_ALLREPO[IssuerName] ),
-        "Sector", MAXX ( CURRENTGROUP (), FACT_ALLREPO[Sector_ssj] ),
-        "Category", MAXX ( CURRENTGROUP (), FACT_ALLREPO[Category_ssj] ),
-        "Country", MAXX ( CURRENTGROUP (), FACT_ALLREPO[Country_ssj] ) )
-VAR im_ea = { "AT", "BE", "BG", "CY", "DE", "EE", "ES", "FI", "FR", "GR", "HR", "IE", "IT", "LT", "LU", "LV", "MT", "NL", "PT", "SI", "SK" }
-VAR im_g =
-    ADDCOLUMNS ( im_one, "@g",
-        VAR im_id = FACT_ALLREPO[IssuerId]
-        VAR im_sov = [Sector] IN { "Government", "Central Admin" }
+    MEASURE '_Measures'[17AB Netting % NEW] =
+        VAR d = [Snap RECONC]
+        VAR uSet = VALUES( 'P1 Unit'[Unit Code] )
+        VAR auths =
+            CALCULATETABLE(
+                SUMMARIZE( FACT_RECONC, FACT_RECONC[AuthorisationId], FACT_RECONC[SGC_UnitCode], FACT_RECONC[Category] ),
+                DIM_DATE[Date] = d,
+                FACT_RECONC[Category] IN { "17A", "17B" },
+                TREATAS( uSet, FACT_RECONC[SGC_UnitCode] ),
+                FACT_RECONC[IsNoAuthorisation] = FALSE (),
+                NOT ISBLANK( FACT_RECONC[AuthorisationId] ) )
+        VAR perAuth =
+            CALCULATETABLE(
+                ADDCOLUMNS(
+                    SUMMARIZE( FACT_RECONC, FACT_RECONC[HeadOfficeSirisId], FACT_RECONC[AuthorisationId],
+                               FACT_RECONC[SGC_UnitCode], FACT_RECONC[Category] ),
+                    "@u", CALCULATE( MAX( FACT_RECONC[UtilEUR] ) ) ),
+                REMOVEFILTERS( DIM_COUNTERPARTY ),
+                TREATAS( auths, FACT_RECONC[AuthorisationId], FACT_RECONC[SGC_UnitCode], FACT_RECONC[Category] ),
+                DIM_DATE[Date] = d,
+                FACT_RECONC[IsEnvelopeTotal] = TRUE () )
+        VAR perCpy =
+            GROUPBY( perAuth, FACT_RECONC[HeadOfficeSirisId],
+                "@a", SUMX( CURRENTGROUP (), IF( FACT_RECONC[Category] = "17A", [@u] ) ),
+                "@b", SUMX( CURRENTGROUP (), IF( FACT_RECONC[Category] = "17B", [@u] ) ) )
         RETURN
-            SWITCH ( TRUE (),
-                ISBLANK ( im_id ) || CONTAINSSTRING ( im_id & "", "#" ) || ISBLANK ( [IssuerName] ), 6,
-                im_sov && [Country] = "US", 1,
-                im_sov && [Country] IN im_ea, 2,
-                im_sov, 3,
-                LEFT ( [Category], 3 ) = "ACG" || [Sector] IN { "SupraNational", "ECA", "Administration" }, 4,
-                5 ) )
-RETURN
-    SELECTCOLUMNS ( im_g,
-        "IssuerId", FACT_ALLREPO[IssuerId],
-        "IssuerName", COALESCE ( [IssuerName], "(no bond detail)" ),
-        "Group", SWITCH ( [@g], 1, "UST", 2, "EGB", 3, "Other govt", 4, "Agencies & SSA", 5, "Corporates & financials", "No bond detail" ),
-        "Group Order", [@g],
-        "Country", [Country], "Sector", [Sector], "Category", [Category] )
+            IF( NOT ISBLANK( d ),
+                DIVIDE( SUMX( perCpy, 2 * MIN( [@a], [@b] ) ), SUMX( perCpy, [@a] + [@b] ) ) )
 
-// ---- S2 the split switch = a FIELD PARAMETER (Modeling ▸ New parameter ▸ Fields). Do not paste with New table.
-// Name: P6W R Split. Add, in this order: P6W Rating Map ▸ Bucket, then P6W Issuer Map ▸ Group. Untick "Add slicer".
-// In the formula bar change only the two labels to Rating / Issuer, so it reads:
-//
-// P6W R Split = {
-//     ( "Rating", NAMEOF ( 'P6W Rating Map'[Bucket] ), 0 ),
-//     ( "Issuer", NAMEOF ( 'P6W Issuer Map'[Group] ), 1 )
-// }
-
-// ---- S3 check (DAX query view). Expect: UST ≈ €11.4bn, EGB ≈ €35bn (Italy, Germany, France, Spain, NL, BE, AT, FI …),
-//         Other govt ≈ €8.5bn (UK, Japan, Australia, Canada), Agencies & SSA ≈ €8.5bn (FHLB, Fannie, Ginnie, Ontario …), a small corporates & financials
-//         slice, No bond detail ≈ €0.3bn; total ≈ €64.2bn (R1 "As of").
+// ---- C0  Measures reading [Unit Selected] (Compares = yes -> breaks with several centres ticked) --
 EVALUATE
-    SUMMARIZECOLUMNS ( 'P6W Issuer Map'[Group], TREATAS ( { "Hedge fund" }, DIM_COUNTERPARTY[HF Scope] ),
-        "Face", [P6 R1 Collateral], "Issuers", COUNTROWS ( 'P6W Issuer Map' ) )
+SELECTCOLUMNS(
+    FILTER( INFO.VIEW.MEASURES (), CONTAINSSTRING( [Expression], "Unit Selected" ) ),
+    "Measure", [Name],
+    "Table", [Table],
+    "Compares a code to it", IF( CONTAINSSTRING( [Expression], "SGC_UnitCode] = " ), "yes", "no" ),
+    "Patch 10 in", IF( CONTAINSSTRING( [Expression], "TREATAS( uSet" ), "set pattern", "" )
+)
+ORDER BY [Measure]
 
-
-
-
-
-
+// ---- C1  Netting line, whole book, last 5 RECONC dates, new default ticks -------------------------
 EVALUATE
-    TOPN ( 40,
-        SUMMARIZECOLUMNS (
-            'P6W Issuer Map'[Sector], 'P6W Issuer Map'[Category], 'P6W Issuer Map'[Country],
-            TREATAS ( { "Hedge fund" }, DIM_COUNTERPARTY[HF Scope] ),
-            "Face", [P6 R1 Collateral],
-            "SectorLen", LEN ( SELECTEDVALUE ( 'P6W Issuer Map'[Sector] ) ),
-            "Example", MAXX ( VALUES ( 'P6W Issuer Map'[IssuerName] ), 'P6W Issuer Map'[IssuerName] ) ),
-        [Face], DESC )
-    ORDER BY [Face] DESC
+SUMMARIZECOLUMNS(
+    DIM_DATE[Date],
+    TREATAS( _Last5, DIM_DATE[Date] ),
+    TREATAS( _NewTicks, 'P1 Unit'[Unit Code] ),
+    "Old (live) netting", [17AB Netting %],
+    "New netting", [17AB Netting % NEW],
+    "17A Util", [17A Util],
+    "17B Util", [17B Util]
+)
+ORDER BY DIM_DATE[Date] DESC
 
-
-
-
-
-P6W Issuer Map =
-VAR im_rows =
-    CALCULATETABLE (
-        SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[IssuerId], FACT_ALLREPO[IssuerName], FACT_ALLREPO[Sector_ssj],
-            FACT_ALLREPO[Category_ssj], FACT_ALLREPO[Country_ssj] ),
-        REMOVEFILTERS () )
-VAR im_one =
-    GROUPBY ( im_rows, FACT_ALLREPO[IssuerId],
-        "IssuerName", MAXX ( CURRENTGROUP (), IF ( FACT_ALLREPO[IssuerName] IN { "not identified", "issuer not identified", "#" }, BLANK (), FACT_ALLREPO[IssuerName] ) ),
-        "Sector", MAXX ( CURRENTGROUP (), IF ( FACT_ALLREPO[Sector_ssj] IN { "not identified", "issuer not identified", "#" }, BLANK (), FACT_ALLREPO[Sector_ssj] ) ),
-        "Category", MAXX ( CURRENTGROUP (), IF ( FACT_ALLREPO[Category_ssj] IN { "not identified", "issuer not identified", "#" }, BLANK (), FACT_ALLREPO[Category_ssj] ) ),
-        "Country", MAXX ( CURRENTGROUP (), IF ( FACT_ALLREPO[Country_ssj] IN { "not identified", "issuer not identified", "#" }, BLANK (), FACT_ALLREPO[Country_ssj] ) ) )
-VAR im_ea = { "AT", "BE", "BG", "CY", "DE", "EE", "ES", "FI", "FR", "GR", "HR", "IE", "IT", "LT", "LU", "LV", "MT", "NL", "PT", "SI", "SK" }
-VAR im_g =
-    ADDCOLUMNS ( im_one, "@g",
-        VAR im_id = FACT_ALLREPO[IssuerId]
-        VAR im_sov = [Sector] IN { "Government", "Central Admin" }
-        RETURN
-            SWITCH ( TRUE (),
-                ISBLANK ( im_id ) || CONTAINSSTRING ( im_id & "", "#" ) || ISBLANK ( [IssuerName] ), 6,
-                im_sov && [Country] = "US", 1,
-                im_sov && [Country] IN im_ea, 2,
-                im_sov, 3,
-                LEFT ( [Category], 3 ) = "ACG" || [Sector] IN { "SupraNational", "ECA", "Administration" }, 4,
-                ISBLANK ( [Sector] ), 7,
-                5 ) )
+// ---- C2  CPY-HF: old vs new default ticks ---------------------------------------------------------
+EVALUATE
+VAR f = TREATAS( { _Id }, DIM_COUNTERPARTY[HeadOfficeSirisId] )
 RETURN
-    SELECTCOLUMNS ( im_g,
-        "IssuerId", FACT_ALLREPO[IssuerId],
-        "IssuerName", COALESCE ( [IssuerName], "(no bond detail)" ),
-        "Group", SWITCH ( [@g], 1, "UST", 2, "EGB", 3, "Other govt", 4, "Agencies & SSA", 5, "Corporates & financials", 7, "Unclassified", "No bond detail" ),
-        "Group Order", [@g],
-        "Country", [Country], "Sector", [Sector], "Category", [Category] )
+UNION(
+    ROW( "Ticks", "old 10 / 2155 / 2164",
+         "17A Util", CALCULATE( [17A Util], f, TREATAS( _OldTicks, 'P1 Unit'[Unit Code] ) ),
+         "17B Util", CALCULATE( [17B Util], f, TREATAS( _OldTicks, 'P1 Unit'[Unit Code] ) ),
+         "Netting NEW", CALCULATE( [17AB Netting % NEW], f, TREATAS( _OldTicks, 'P1 Unit'[Unit Code] ) ),
+         "Unit Label", CALCULATE( [Unit Label], f, TREATAS( _OldTicks, 'P1 Unit'[Unit Code] ) ) ),
+    ROW( "Ticks", "new 10 / 2140 / 2155 / 2164 / 2195",
+         "17A Util", CALCULATE( [17A Util], f, TREATAS( _NewTicks, 'P1 Unit'[Unit Code] ) ),
+         "17B Util", CALCULATE( [17B Util], f, TREATAS( _NewTicks, 'P1 Unit'[Unit Code] ) ),
+         "Netting NEW", CALCULATE( [17AB Netting % NEW], f, TREATAS( _NewTicks, 'P1 Unit'[Unit Code] ) ),
+         "Unit Label", CALCULATE( [Unit Label], f, TREATAS( _NewTicks, 'P1 Unit'[Unit Code] ) ) )
+)
