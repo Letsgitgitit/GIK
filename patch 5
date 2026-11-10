@@ -55,3 +55,19 @@ RETURN
 EVALUATE
     SUMMARIZECOLUMNS ( 'P6W Issuer Map'[Group], TREATAS ( { "Hedge fund" }, DIM_COUNTERPARTY[HF Scope] ),
         "Face", [P6 R1 Collateral], "Issuers", COUNTROWS ( 'P6W Issuer Map' ) )
+
+
+
+
+
+
+EVALUATE
+    TOPN ( 40,
+        SUMMARIZECOLUMNS (
+            'P6W Issuer Map'[Sector], 'P6W Issuer Map'[Category], 'P6W Issuer Map'[Country],
+            TREATAS ( { "Hedge fund" }, DIM_COUNTERPARTY[HF Scope] ),
+            "Face", [P6 R1 Collateral],
+            "SectorLen", LEN ( SELECTEDVALUE ( 'P6W Issuer Map'[Sector] ) ),
+            "Example", MAXX ( VALUES ( 'P6W Issuer Map'[IssuerName] ), 'P6W Issuer Map'[IssuerName] ) ),
+        [Face], DESC )
+    ORDER BY [Face] DESC
