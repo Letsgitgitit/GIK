@@ -71,3 +71,41 @@ EVALUATE
             "Example", MAXX ( VALUES ( 'P6W Issuer Map'[IssuerName] ), 'P6W Issuer Map'[IssuerName] ) ),
         [Face], DESC )
     ORDER BY [Face] DESC
+
+
+
+
+
+P6W Issuer Map =
+VAR im_rows =
+    CALCULATETABLE (
+        SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[IssuerId], FACT_ALLREPO[IssuerName], FACT_ALLREPO[Sector_ssj],
+            FACT_ALLREPO[Category_ssj], FACT_ALLREPO[Country_ssj] ),
+        REMOVEFILTERS () )
+VAR im_one =
+    GROUPBY ( im_rows, FACT_ALLREPO[IssuerId],
+        "IssuerName", MAXX ( CURRENTGROUP (), IF ( FACT_ALLREPO[IssuerName] IN { "not identified", "issuer not identified", "#" }, BLANK (), FACT_ALLREPO[IssuerName] ) ),
+        "Sector", MAXX ( CURRENTGROUP (), IF ( FACT_ALLREPO[Sector_ssj] IN { "not identified", "issuer not identified", "#" }, BLANK (), FACT_ALLREPO[Sector_ssj] ) ),
+        "Category", MAXX ( CURRENTGROUP (), IF ( FACT_ALLREPO[Category_ssj] IN { "not identified", "issuer not identified", "#" }, BLANK (), FACT_ALLREPO[Category_ssj] ) ),
+        "Country", MAXX ( CURRENTGROUP (), IF ( FACT_ALLREPO[Country_ssj] IN { "not identified", "issuer not identified", "#" }, BLANK (), FACT_ALLREPO[Country_ssj] ) ) )
+VAR im_ea = { "AT", "BE", "BG", "CY", "DE", "EE", "ES", "FI", "FR", "GR", "HR", "IE", "IT", "LT", "LU", "LV", "MT", "NL", "PT", "SI", "SK" }
+VAR im_g =
+    ADDCOLUMNS ( im_one, "@g",
+        VAR im_id = FACT_ALLREPO[IssuerId]
+        VAR im_sov = [Sector] IN { "Government", "Central Admin" }
+        RETURN
+            SWITCH ( TRUE (),
+                ISBLANK ( im_id ) || CONTAINSSTRING ( im_id & "", "#" ) || ISBLANK ( [IssuerName] ), 6,
+                im_sov && [Country] = "US", 1,
+                im_sov && [Country] IN im_ea, 2,
+                im_sov, 3,
+                LEFT ( [Category], 3 ) = "ACG" || [Sector] IN { "SupraNational", "ECA", "Administration" }, 4,
+                ISBLANK ( [Sector] ), 7,
+                5 ) )
+RETURN
+    SELECTCOLUMNS ( im_g,
+        "IssuerId", FACT_ALLREPO[IssuerId],
+        "IssuerName", COALESCE ( [IssuerName], "(no bond detail)" ),
+        "Group", SWITCH ( [@g], 1, "UST", 2, "EGB", 3, "Other govt", 4, "Agencies & SSA", 5, "Corporates & financials", 7, "Unclassified", "No bond detail" ),
+        "Group Order", [@g],
+        "Country", [Country], "Sector", [Sector], "Category", [Category] )
