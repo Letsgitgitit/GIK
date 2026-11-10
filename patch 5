@@ -1,0 +1,57 @@
+// Grouping from the 9 Nov issuer listing (HF 17B collateral, 4 Nov): Sector_ssj "Government" / "Central Admin" = sovereign
+// debt (US Treasury, Italy, Germany, France, UK DMO, Japan, Spain …); Category_ssj starting "ACG" = public sector
+// (agencies, regions, public banks: FHLB, Fannie Mae, Ginnie Mae, Ontario, BPI, SFIL, CADES, Unedic …); Sector_ssj
+// "SupraNational" / "ECA" = supranationals and export agencies; everything else = corporates & financials.
+// =====================================================================================
+
+// ---- S1 Modeling ▸ New table ▸ paste ▸ Enter. Then [Group] ▸ Sort by column ▸ Group Order. Hide Group Order,
+//         IssuerId, Country, Sector, Category. No relationship.
+
+P6W Issuer Map =
+VAR im_rows =
+    CALCULATETABLE (
+        SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[IssuerId], FACT_ALLREPO[IssuerName], FACT_ALLREPO[Sector_ssj],
+            FACT_ALLREPO[Category_ssj], FACT_ALLREPO[Country_ssj] ),
+        REMOVEFILTERS () )
+VAR im_one =
+    GROUPBY ( im_rows, FACT_ALLREPO[IssuerId],
+        "IssuerName", MAXX ( CURRENTGROUP (), FACT_ALLREPO[IssuerName] ),
+        "Sector", MAXX ( CURRENTGROUP (), FACT_ALLREPO[Sector_ssj] ),
+        "Category", MAXX ( CURRENTGROUP (), FACT_ALLREPO[Category_ssj] ),
+        "Country", MAXX ( CURRENTGROUP (), FACT_ALLREPO[Country_ssj] ) )
+VAR im_ea = { "AT", "BE", "BG", "CY", "DE", "EE", "ES", "FI", "FR", "GR", "HR", "IE", "IT", "LT", "LU", "LV", "MT", "NL", "PT", "SI", "SK" }
+VAR im_g =
+    ADDCOLUMNS ( im_one, "@g",
+        VAR im_id = FACT_ALLREPO[IssuerId]
+        VAR im_sov = [Sector] IN { "Government", "Central Admin" }
+        RETURN
+            SWITCH ( TRUE (),
+                ISBLANK ( im_id ) || CONTAINSSTRING ( im_id & "", "#" ) || ISBLANK ( [IssuerName] ), 6,
+                im_sov && [Country] = "US", 1,
+                im_sov && [Country] IN im_ea, 2,
+                im_sov, 3,
+                LEFT ( [Category], 3 ) = "ACG" || [Sector] IN { "SupraNational", "ECA", "Administration" }, 4,
+                5 ) )
+RETURN
+    SELECTCOLUMNS ( im_g,
+        "IssuerId", FACT_ALLREPO[IssuerId],
+        "IssuerName", COALESCE ( [IssuerName], "(no bond detail)" ),
+        "Group", SWITCH ( [@g], 1, "UST", 2, "EGB", 3, "Other govt", 4, "Agencies & SSA", 5, "Corporates & financials", "No bond detail" ),
+        "Group Order", [@g],
+        "Country", [Country], "Sector", [Sector], "Category", [Category] )
+
+// ---- S2 the split switch = a FIELD PARAMETER (Modeling ▸ New parameter ▸ Fields). Do not paste with New table.
+// Name: P6W R Split. Add, in this order: P6W Rating Map ▸ Bucket, then P6W Issuer Map ▸ Group. Untick "Add slicer".
+// In the formula bar change only the two labels to Rating / Issuer, so it reads:
+//
+// P6W R Split = {
+//     ( "Rating", NAMEOF ( 'P6W Rating Map'[Bucket] ), 0 ),
+//     ( "Issuer", NAMEOF ( 'P6W Issuer Map'[Group] ), 1 )
+// }
+
+// ---- S3 check (DAX query view). Expect: UST ≈ €11.4bn, EGB ≈ €35bn (Italy, Germany, France, Spain, NL, BE, AT, FI …),
+//         Other govt ≈ €8.5bn (UK, Japan, Australia, Canada), Agencies & SSA ≈ €8.5bn (FHLB, Fannie, Ginnie, Ontario …), a small corporates & financials
+//         slice, No bond detail ≈ €0.3bn; total ≈ €64.2bn (R1 "As of").
+EVALUATE
+    SUMMARIZECOLUMNS ( 'P6W Issuer Map'[Group], TREATAS ( { "Hedge fund" }, DIM_COUNTERPARTY[HF Scope] ),
+        "Face", [P6 R1 Collateral], "Issuers", COUNTROWS ( 'P6W Issuer Map' ) )
