@@ -75,3 +75,25 @@ EVALUATE
     VAR _d = CALCULATETABLE ( VALUES ( DIM_DATE[Date] ), DIM_DATE[Date] > _l - 10, DIM_DATE[Date] <= _l )
     RETURN SUMMARIZECOLUMNS ( DIM_DATE[Date], _d, _kScope, "17A_used", [P6 K4T 17A Used %], "17B_used", [P6 K4T 17B Used %] )
     ORDER BY DIM_DATE[Date]
+
+
+
+
+
+
+EVALUATE
+VAR d = CALCULATE ( MAX ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS () )
+RETURN
+TOPN ( 40,
+    CALCULATETABLE (
+        ADDCOLUMNS (
+            SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[IssuerName], FACT_ALLREPO[PublicSector_ssj],
+                FACT_ALLREPO[Country_ssj], FACT_ALLREPO[Category_ssj], FACT_ALLREPO[Sector_ssj],
+                FACT_ALLREPO[EconomicSector_ssj] ),
+            "Face_bn", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ) / 1E9,
+            "Issuers", CALCULATE ( DISTINCTCOUNT ( FACT_ALLREPO[IssuerId] ) ) ),
+        REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = d, FACT_ALLREPO[SLA_CateCode] = "07L",
+        FACT_ALLREPO[BuySell] = "S", DIM_COUNTERPARTY[HF Scope] = "Hedge fund",
+        KEEPFILTERS ( FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) ) ) ),
+    [Face_bn], DESC )
+ORDER BY [Face_bn] DESC
