@@ -1,5 +1,5 @@
 // =====================================================================================
-// P5W_MEASURES_TE2.csx  -  BUILD 2026-11-04b
+// P5W_MEASURES_TE2.csx  -  BUILD 2026-11-11b
 // P5-W Product & sales: 59 measures in table _Measures, folders P5\1 Base … P5\6 Format.
 // Contract: P5W_LAYOUT_AND_CONTRACT.md v1.2; preflight P5W_PREFLIGHT_RESULTS.md.
 //
@@ -32,7 +32,7 @@ foreach (var n in new[] { "Rev Revenue EUR", "Rev Window Start", "Rev Window End
 var defs = new List<string[]>();
 defs.Add(new[] { @"P5 Intra Mode", @"P5\1 Base", @"", @"", @"-- Intra-group switch (B4). Default Exclude: the bank's own group (DIM_COUNTERPARTY[IsIntraGroup]) leaves every P5 figure.
 SELECTEDVALUE ( 'P5W IntraGroup'[Option], ""Exclude"" )" });
-defs.Add(new[] { @"P5 Revenue", @"P5\1 Base", @"""€""#,0.0,,""m""", @"", @"-- THE P5 revenue rule (contract A3): Rev Revenue EUR (re-booked repos out) with the intra-group switch applied.
+defs.Add(new[] { @"P5 Revenue", @"P5\1 Base", @"""€""#,0.0", @"", @"-- THE P5 revenue rule (contract A3): Rev Revenue EUR (re-booked repos out) with the intra-group switch applied.
 -- Net revenue: negative rows (e.g. securitisation funding charges) stay in.
 VAR _mode = [P5 Intra Mode]
 RETURN
@@ -42,7 +42,7 @@ RETURN
             FILTER ( ALL ( DIM_COUNTERPARTY[IsIntraGroup] ),
                 _mode = ""Include"" || DIM_COUNTERPARTY[IsIntraGroup] = FALSE () ) )
     )" });
-defs.Add(new[] { @"P5 Revenue LY", @"P5\1 Base", @"""€""#,0.0,,""m""", @"", @"-- Same span one year earlier: viewed in March, Jan-Mar of last year (window end capped at the last sales date).
+defs.Add(new[] { @"P5 Revenue LY", @"P5\1 Base", @"""€""#,0.0", @"", @"-- Same span one year earlier: viewed in March, Jan-Mar of last year (window end capped at the last sales date).
 VAR _s = [Rev Window Start]
 VAR _e = [Rev Window End]
 RETURN
@@ -61,10 +61,10 @@ RETURN
             FILTER ( ALL ( DIM_COUNTERPARTY[IsIntraGroup] ),
                 _mode = ""Include"" || DIM_COUNTERPARTY[IsIntraGroup] = FALSE () ) )
     )" });
-defs.Add(new[] { @"P5 Nominal Cap", @"P5\1 Base", @"""€""#,0.0,,,""bn""", @"", @"-- Rows above this nominal are data errors or extreme tickets (PF-04: one row at EUR 1.58tn). Excluded from every
+defs.Add(new[] { @"P5 Nominal Cap", @"P5\1 Base", @"""€""#,0.0", @"", @"-- Rows above this nominal are data errors or extreme tickets (PF-04: one row at EUR 1.58tn). Excluded from every
 -- nominal-based figure (bps, tenor, ticket), never from revenue.
 5E10" });
-defs.Add(new[] { @"P5 Nominal Clean", @"P5\1 Base", @"""€""#,0.0,,,""bn""", @"", @"VAR _mode = [P5 Intra Mode]
+defs.Add(new[] { @"P5 Nominal Clean", @"P5\1 Base", @"""€""#,0.0", @"", @"VAR _mode = [P5 Intra Mode]
 VAR _cap = [P5 Nominal Cap]
 RETURN
     CALCULATE (
@@ -89,7 +89,7 @@ RETURN
                 _mode = ""Include"" || DIM_COUNTERPARTY[IsIntraGroup] = FALSE () ) )
             ),
             LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 ) )" });
-defs.Add(new[] { @"P5 Charges", @"P5\1 Base", @"""€""#,0.0,,""m""", @"", @"-- Securitisation funding / liquidity charges booked in the sales feed from 2026 (PF-02: negative rows, source
+defs.Add(new[] { @"P5 Charges", @"P5\1 Base", @"""€""#,0.0", @"", @"-- Securitisation funding / liquidity charges booked in the sales feed from 2026 (PF-02: negative rows, source
 -- ""Titrisation File"", none offsets a positive deal). Already inside P5 Revenue; shown in tooltips.
 CALCULATE (
     [P5 Revenue],
@@ -141,7 +141,7 @@ RETURN
         _d < 30, FORMAT ( _d, ""0"" ) & ""d"",
         _d <= 365, FORMAT ( _d / 30.4, ""0"" ) & ""m"",
         FORMAT ( _d / 365.25, ""0.0"" ) & ""y"" )" });
-defs.Add(new[] { @"P5 Avg Ticket", @"P5\2 Product", @"""€""#,0.0,,""m""", @"", @"VAR _cap = [P5 Nominal Cap]
+defs.Add(new[] { @"P5 Avg Ticket", @"P5\2 Product", @"""€""#,0.0", @"", @"VAR _cap = [P5 Nominal Cap]
 RETURN
     DIVIDE ( [P5 Nominal Clean],
         CALCULATE ( [P5 Deals], FACT_SALES[NominalAmountEUR] > 0, FACT_SALES[NominalAmountEUR] <= _cap ) )" });
@@ -195,10 +195,10 @@ RETURN
         ""Same period LY"", EDATE ( _a, -12 ),
         ""Full year LY"", DATE ( YEAR ( _a ) - 1, 12, 31 ),
         _a )" });
-defs.Add(new[] { @"P5 Map Revenue", @"P5\3 Map and mix", @"""€""#,0.0,,""m""", @"", @"VAR _s = [P5 Map Start]
+defs.Add(new[] { @"P5 Map Revenue", @"P5\3 Map and mix", @"""€""#,0.0", @"", @"VAR _s = [P5 Map Start]
 VAR _e = [P5 Map End]
 RETURN CALCULATE ( [P5 Revenue], REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _s, _e ) )" });
-defs.Add(new[] { @"P5 Map Revenue Prior", @"P5\3 Map and mix", @"""€""#,0.0,,""m""", @"", @"-- The comparable window one year earlier.
+defs.Add(new[] { @"P5 Map Revenue Prior", @"P5\3 Map and mix", @"""€""#,0.0", @"", @"-- The comparable window one year earlier.
 VAR _s = EDATE ( [P5 Map Start], -12 )
 VAR _e = EDATE ( [P5 Map End], -12 )
 RETURN CALCULATE ( [P5 Revenue], REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _s, _e ) )" });
@@ -223,7 +223,7 @@ VAR _e = [P5 Map End]
 RETURN
     FORMAT ( _s, ""d mmm"" ) & "" → "" & FORMAT ( _e, ""d mmm yyyy"" ) & "" · colour = growth vs ""
         & FORMAT ( EDATE ( _s, -12 ), ""d mmm"" ) & "" → "" & FORMAT ( EDATE ( _e, -12 ), ""d mmm yyyy"" )" });
-defs.Add(new[] { @"P5 F Revenue SP", @"P5\3 Map and mix", @"""€""#,0.0,,""m""", @"", @"-- Revenue of the year on the axis, 1 Jan -> the same day and month as the last sales date (every year cut at the same
+defs.Add(new[] { @"P5 F Revenue SP", @"P5\3 Map and mix", @"""€""#,0.0", @"", @"-- Revenue of the year on the axis, 1 Jan -> the same day and month as the last sales date (every year cut at the same
 -- date, so 2026 to date compares like for like with earlier years). F in its ""EUR m"" view.
 VAR _y = SELECTEDVALUE ( DIM_DATE[Year] )
 VAR _a = [Asof Sales Date]
@@ -231,7 +231,7 @@ RETURN
     IF ( NOT ISBLANK ( _y ),
         CALCULATE ( [P5 Revenue], REMOVEFILTERS ( DIM_DATE ),
             DATESBETWEEN ( DIM_DATE[Date], DATE ( _y, 1, 1 ), DATE ( _y, MONTH ( _a ), DAY ( _a ) ) ) ) )" });
-defs.Add(new[] { @"P5 F Revenue SP LY", @"P5\3 Map and mix", @"""€""#,0.0,,""m""", @"", @"-- Same cut, the year before.
+defs.Add(new[] { @"P5 F Revenue SP LY", @"P5\3 Map and mix", @"""€""#,0.0", @"", @"-- Same cut, the year before.
 VAR _y = SELECTEDVALUE ( DIM_DATE[Year] )
 VAR _a = [Asof Sales Date]
 RETURN
@@ -296,7 +296,7 @@ VAR _rec =
 RETURN
     FORMAT ( COUNTROWS ( _rec ), ""#,0"" ) & "" CPHs trade ≥ 9 of 12 months · ""
         & FORMAT ( _s, ""mmm yy"" ) & "" → "" & FORMAT ( _e, ""mmm yy"" )" });
-defs.Add(new[] { @"P5 C2 Silent Limit", @"P5\4 Cards", @"""€""#,0.0,,,""bn""", @"", @"-- 16A limit (last 16A snapshot <= window end) of CPHs with no deal in the 12 complete months.
+defs.Add(new[] { @"P5 C2 Silent Limit", @"P5\4 Cards", @"""€""#,0.0", @"", @"-- 16A limit (last 16A snapshot <= window end) of CPHs with no deal in the 12 complete months.
 -- Trading test: any deal (net-negative traders are not silent, Q2), all rows, ignores Region, follows product filters.
 -- Intra = Exclude: holders drop every CPH with an intra-group entity (contract 1.2).
 VAR _mode = [P5 Intra Mode]
@@ -387,7 +387,7 @@ VAR _thr = MINX ( _top, FACT_SALES[TotalGainEUR] )
 RETURN
     IF ( NOT ISBLANK ( _thr ),
         DIVIDE ( CALCULATE ( [P5 Revenue], FACT_SALES[TotalGainEUR] >= _thr ), [P5 Revenue] ) )" });
-defs.Add(new[] { @"P5 C3 Largest", @"P5\4 Cards", @"""€""#,0.0,,""m""", @"", @"VAR _mode = [P5 Intra Mode]
+defs.Add(new[] { @"P5 C3 Largest", @"P5\4 Cards", @"""€""#,0.0", @"", @"VAR _mode = [P5 Intra Mode]
 VAR _top =
     CALCULATETABLE (
         TOPN ( 100, VALUES ( FACT_SALES[TotalGainEUR] ), FACT_SALES[TotalGainEUR], DESC ),
@@ -411,12 +411,12 @@ VAR _one =
         || ( ISFILTERED ( FACT_SALES[ProductLineLongName] ) && HASONEVALUE ( FACT_SALES[ProductLineLongName] ) )
         || ( ISFILTERED ( FACT_SALES[InstrumentLongName] ) && HASONEVALUE ( FACT_SALES[InstrumentLongName] ) )
 RETURN IF ( _one, [P5 Revenue bps] )" });
-defs.Add(new[] { @"P5 I Undated", @"P5\5 Clients and sellers", @"""€""#,0.0,,""m""", @"", @"CALCULATE ( [P5 Revenue], FACT_SALES[Tenor Bucket] = ""Undated"" )" });
+defs.Add(new[] { @"P5 I Undated", @"P5\5 Clients and sellers", @"""€""#,0.0", @"", @"CALCULATE ( [P5 Revenue], FACT_SALES[Tenor Bucket] = ""Undated"" )" });
 defs.Add(new[] { @"P5 I Subtitle", @"P5\5 Clients and sellers", @"", @"", @"VAR _u = [P5 I Undated]
 RETURN ""€m by tenor at trade"" & IF ( _u <> 0, "" · undated €"" & FORMAT ( _u / 1E6, ""#,0.0"" ) & ""m not shown"" )" });
 defs.Add(new[] { @"P5 Z6 Mode", @"P5\5 Clients and sellers", @"", @"", @"-- Z6a switch: concentration by Client (risk CPH), Deal or Entity (decision 4 Nov). Default Client.
 SELECTEDVALUE ( 'P5W Concentration'[Option], ""Client"" )" });
-defs.Add(new[] { @"P5 Z6 Top1", @"P5\5 Clients and sellers", @"""€""#,0.0,,""m""", @"", @"-- Largest client / deal / entity in the product (Z6 segment ""Top 1"").
+defs.Add(new[] { @"P5 Z6 Top1", @"P5\5 Clients and sellers", @"""€""#,0.0", @"", @"-- Largest client / deal / entity in the product (Z6 segment ""Top 1"").
 SWITCH ( [P5 Z6 Mode],
     ""Deal"",
         VAR _mode = [P5 Intra Mode]
@@ -439,7 +439,7 @@ SWITCH ( [P5 Z6 Mode],
                 ADDCOLUMNS ( SUMMARIZE ( FACT_SALES, DIM_COUNTERPARTY[CPH_Id] ), ""@r"", [P5 Revenue] ),
                 LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 && NOT ISBLANK ( [@r] ) )
     RETURN MAXX ( _t, [@r] ) )" });
-defs.Add(new[] { @"P5 Z6 Top5", @"P5\5 Clients and sellers", @"""€""#,0.0,,""m""", @"", @"-- Five largest clients / deals / entities (deal ties at the 5th value included).
+defs.Add(new[] { @"P5 Z6 Top5", @"P5\5 Clients and sellers", @"""€""#,0.0", @"", @"-- Five largest clients / deals / entities (deal ties at the 5th value included).
 SWITCH ( [P5 Z6 Mode],
     ""Deal"",
         VAR _mode = [P5 Intra Mode]
@@ -462,8 +462,8 @@ SWITCH ( [P5 Z6 Mode],
                 ADDCOLUMNS ( SUMMARIZE ( FACT_SALES, DIM_COUNTERPARTY[CPH_Id] ), ""@r"", [P5 Revenue] ),
                 LEN ( DIM_COUNTERPARTY[CPH_Id] ) > 0 && NOT ISBLANK ( [@r] ) )
     RETURN SUMX ( TOPN ( 5, _t, [@r], DESC ), [@r] ) )" });
-defs.Add(new[] { @"P5 Z6 Top2to5", @"P5\5 Clients and sellers", @"""€""#,0.0,,""m""", @"", @"[P5 Z6 Top5] - [P5 Z6 Top1]" });
-defs.Add(new[] { @"P5 Z6 Rest", @"P5\5 Clients and sellers", @"""€""#,0.0,,""m""", @"", @"-- Everything outside the top 5 (in Client mode this includes revenue without a risk CPH).
+defs.Add(new[] { @"P5 Z6 Top2to5", @"P5\5 Clients and sellers", @"""€""#,0.0", @"", @"[P5 Z6 Top5] - [P5 Z6 Top1]" });
+defs.Add(new[] { @"P5 Z6 Rest", @"P5\5 Clients and sellers", @"""€""#,0.0", @"", @"-- Everything outside the top 5 (in Client mode this includes revenue without a risk CPH).
 [P5 Revenue] - [P5 Z6 Top5]" });
 defs.Add(new[] { @"P5 Z6 Top5 Share", @"P5\5 Clients and sellers", @"0%", @"", @"DIVIDE ( [P5 Z6 Top5], [P5 Revenue] )" });
 defs.Add(new[] { @"P5 Z6 Top1 Label", @"P5\5 Clients and sellers", @"", @"", @"-- Tooltip: who / which deal is ""Top 1"", and its share of the product.
@@ -503,7 +503,7 @@ defs.Add(new[] { @"P5 Z6 Subtitle", @"P5\5 Clients and sellers", @"", @"", @"SWI
     ""Deal"", ""largest deal / next 4 / other deals · share of revenue"",
     ""Entity"", ""largest entity / next 4 / other entities · share of revenue"",
     ""top risk CPH / next 4 / rest · ≥ 55 % in top 5 = thin"" )" });
-defs.Add(new[] { @"P5 H Revenue Top8", @"P5\5 Clients and sellers", @"""€""#,0.0,,""m""", @"", @"-- H: revenue of the 8 largest desks / salespeople, blank for the rest (Top N filters are unreliable on a field parameter).
+defs.Add(new[] { @"P5 H Revenue Top8", @"P5\5 Clients and sellers", @"""€""#,0.0", @"", @"-- H: revenue of the 8 largest desks / salespeople, blank for the rest (Top N filters are unreliable on a field parameter).
 VAR _r =
     SWITCH ( TRUE (),
         ISINSCOPE ( FACT_SALES[DeskShortName] ), RANKX ( ALLSELECTED ( FACT_SALES[DeskShortName] ), [P5 Revenue], , DESC ),
@@ -550,7 +550,7 @@ foreach (var d in defs) {
         created++; rep.AppendLine((dryRun ? "WOULD CREATE  " : "created  ") + d[0]);
     }
 }
-Info("P5W_MEASURES  BUILD 2026-11-04b" + (dryRun ? "   (DRY RUN - nothing changed)" : "") + "\n"
+Info("P5W_MEASURES  BUILD 2026-11-11b" + (dryRun ? "   (DRY RUN - nothing changed)" : "") + "\n"
      + "created " + created + " · updated " + updated + " · unchanged " + same + " (of " + defs.Count + ")\n\n"
      + rep.ToString() + "\n"
      + (dryRun ? "Set dryRun = false and run again to apply." : "Next: Ctrl+S, then P5W_MEASURES_CHECK.dax."));
