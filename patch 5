@@ -1,176 +1,90 @@
-P1 PATCH 13 (Desktop only) - booking-centre info icon in CORTEX mode too + 17A / 17B netting line fix
-                                                                                                    BUILD 2026-11-10b
+P5W PATCH 01 (Desktop only) - I "Revenue by tenor": average tenor inside each bar in the tooltip      BUILD 2026-11-11a
 =====================================================================================================================
-Replaces patch 12 (the "(!)" and info icon already work, so Unit Short / BC Flag 17AB are not needed; patch 12 can be
-ignored). Needs patch 10 in place. 2 measures REPLACED in table _Measures + 1 visual step. No table or column.
-
-REPLACE a measure : Data pane > _Measures > click it > formula bar > Ctrl+A > paste the block > Enter.
-Paste each block from its name line down to the line before the next ====. File > Save at the end.
-UNDO: reopen the .pbix saved before starting (save a copy first).
-
-Rule after this patch
-  - Info icon: shows whenever the selection has 17A / 17B lines in a booking centre that is NOT ticked in the
-    P1 Unit slicer, whatever the G1 source (CORTEX or facts) and whatever the Metric Focus. In CORTEX mode the
-    G1 figure itself covers every centre; the icon is there because the cards, E1 and F1 always read the facts.
-    Tooltip unchanged ([Unit Label]): "! Booking centres counted: ... · NOT counted: ...".
-  - G1 subtitle "(!)" unchanged: only when the G1 figure itself is on facts and leaves a centre out.
-  - Netting line: follows the ticked centres (none ticked = all), like the 17A / 17B base measures.
-
-==== 1/2  REPLACE
-BC Info Icon =
--- Info icon next to the G1 subtitle: shows whenever the selection has 17A / 17B lines in a booking centre that is
--- not ticked in the P1 Unit slicer (the cards, E1 and F1 leave those lines out), on CORTEX or facts, any Metric Focus.
-IF( LEFT( [Unit Label], 1 ) = "!", "ⓘ", "" )
-
-==== 2/2  REPLACE
-17AB Netting % =
--- Share of gross 17A + 17B utilisation that offsets within each counterparty:
--- per entity 2 x MIN( 17A, 17B ) / ( 17A + 17B ), summed over entities (never across counterparties).
--- RECONC total lines; an authorisation = AuthorisationId + booking centre + category, counted once.
--- Booking centres: those ticked in the P1 Unit slicer (none ticked = all), same rule as the base measures.
--- (Was blank since patch 10: it compared SGC_UnitCode to [Unit Selected], which now returns "SET" / "ALL".)
-VAR d = [Snap RECONC]
-VAR uSet = VALUES( 'P1 Unit'[Unit Code] )
-VAR auths =
-    CALCULATETABLE(
-        SUMMARIZE( FACT_RECONC, FACT_RECONC[AuthorisationId], FACT_RECONC[SGC_UnitCode], FACT_RECONC[Category] ),
-        DIM_DATE[Date] = d,
-        FACT_RECONC[Category] IN { "17A", "17B" },
-        TREATAS( uSet, FACT_RECONC[SGC_UnitCode] ),
-        FACT_RECONC[IsNoAuthorisation] = FALSE (),
-        NOT ISBLANK( FACT_RECONC[AuthorisationId] )
-    )
-VAR perAuth =
-    CALCULATETABLE(
-        ADDCOLUMNS(
-            SUMMARIZE( FACT_RECONC, FACT_RECONC[HeadOfficeSirisId], FACT_RECONC[AuthorisationId],
-                       FACT_RECONC[SGC_UnitCode], FACT_RECONC[Category] ),
-            "@u", CALCULATE( MAX( FACT_RECONC[UtilEUR] ) ) ),
-        REMOVEFILTERS( DIM_COUNTERPARTY ),
-        TREATAS( auths, FACT_RECONC[AuthorisationId], FACT_RECONC[SGC_UnitCode], FACT_RECONC[Category] ),
-        DIM_DATE[Date] = d,
-        FACT_RECONC[IsEnvelopeTotal] = TRUE ()
-    )
-VAR perCpy =
-    GROUPBY( perAuth, FACT_RECONC[HeadOfficeSirisId],
-        "@a", SUMX( CURRENTGROUP (), IF( FACT_RECONC[Category] = "17A", [@u] ) ),
-        "@b", SUMX( CURRENTGROUP (), IF( FACT_RECONC[Category] = "17B", [@u] ) ) )
-VAR grossUtil = SUMX( perCpy, [@a] + [@b] )
-VAR offsetUtil = SUMX( perCpy, 2 * MIN( [@a], [@b] ) )
-RETURN
-    IF( NOT ISBLANK( d ), DIVIDE( offsetUtil, grossUtil ) )
-
-==== VISUAL STEP - P1 Unit slicer default: 10 / 2140 / 2155 / 2164 / 2195
-1. Tick 10, 2140, 2155, 2164 and 2195 on the P1 Unit slicer (4906 / 4921 stay off: separate booking centres).
-2. View > Bookmarks: any bookmark that captures this slicer -> set the ticks, then ... > Update.
-3. File > Save.
-
-==== CHECKS
-C1 Run P1_PATCH_12_CHECK.dax (still valid): C0 should list no measure with "Compares a code to it = yes" after
-   this patch; C1 "New netting" between 0 and 100 % on the last 5 dates.
-C2 G2 = CORTEX, Metric 17A, CPY-HF selected, untick 2155 -> icon shows, tooltip "... NOT counted: 2155";
-   G1 subtitle stays "CORTEX · ..." with no "(!)". Re-tick 2155 -> icon disappears.
-C3 E1: the dashed green netting line is back. CPY-A (0000000785) blank if it has no 17A / 17B utilisation.
-
-
-
-
-
+2 NEW measures in table _Measures + 1 visual step. No table or column. Reads the existing [P5 Tenor Text]
+(nominal-weighted average of DealLifeDays, rows with nominal <= the EUR 50bn cap - same rule as the scorecard
+"avg tenor" column), so the tooltip and Z1 always agree.
+ 
+NEW measure : select table _Measures > Table tools > New measure > Ctrl+A > paste the block > Enter.
+              Then (Measure tools ribbon) Display folder P5\2 Product, format Text.
+UNDO: delete the two measures.
+ 
+==== 1/2  NEW
+P5 I Tenor Bar =
+-- Average tenor of the WHOLE bar under the cursor (all product line groups in that tenor bucket), whatever segment
+-- is hovered. ALLSELECTED keeps the page / slicer / cross-filter selection and only drops the segment's own
+-- line-group filter. Example on 5Y: "3.2y" tells you whether the bucket is mostly 2y or mostly 4y deals.
+CALCULATE ( [P5 Tenor Text], ALLSELECTED ( DIM_PRODUCTLINE ) )
+ 
+==== 2/2  NEW
+P5 I Tenor Product =
+-- Average tenor of the hovered segment only (that product line group, in that tenor bucket).
+[P5 Tenor Text]
+ 
+==== VISUAL STEP - I Tenor tooltip
+1. Select I (Revenue by tenor) > Build pane > Tooltips well: drag in P5 I Tenor Bar, then P5 I Tenor Product.
+2. Rename them in the well (double-click): "Avg tenor · whole bar" and "Avg tenor · this product".
+3. Hover the 5Y bar on any segment -> tooltip reads, for example:
+     Tenor Bucket          5Y
+     ProductLineGroupName  EUR RATES
+     P5 Revenue            €98.4m
+     Avg tenor · whole bar     3.1y
+     Avg tenor · this product  4.2y
+   (Figures are an illustration, not reference values.)
+ 
+==== CHECKS (P5W_PATCH_01_CHECK.dax, part T1)
+T1 Per bucket, 2026 YTD, Exclude: average tenor sits inside the bucket's range (5Y between 1.0y and 5.0y, 30Y between
+   10y and 50y). A figure outside its range = rows with no nominal or above the cap dominate that bucket - flag it.
 
 
 
 // =====================================================================================
-// P1_PATCH_12_CHECK.dax  -  BUILD 2026-11-10a  -  read-only
-// C0 before the patch (which measures still compare a centre code to [Unit Selected]).
-// C1 / C2 run the NEW netting measure query-scoped, so they work before or after the patch.
-// RUN: DAX query view > paste > Run. 3 result tabs. Ids only in the output.
+// P5W_PATCH_01_CHECK.dax  -  BUILD 2026-11-11a  -  read-only
+// T1  tenor tooltip: average tenor per bucket (whole book) and per bucket x line group.
+// T2  scorecard (Z1) vs mix-by-year (F) per year: where the gap comes from.
+// RUN: DAX query view > paste > Run. 3 result tabs. Intra-group = Exclude (the page default).
 // =====================================================================================
 DEFINE
-    VAR _Id = "0001228674"                                       // CPY-HF (generic label)
-    VAR _OldTicks = { "10", "2155", "2164" }                     // patch 10 default
-    VAR _NewTicks = { "10", "2140", "2155", "2164", "2195" }     // patch 12 default
-    VAR _Last5 = TOPN( 5, VALUES( FACT_RECONC[SnapshotDate] ), FACT_RECONC[SnapshotDate], DESC )
+    VAR _ytd = DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) )
+    VAR _excl = TREATAS ( { "Exclude" }, 'P5W IntraGroup'[Option] )
 
-    MEASURE '_Measures'[17AB Netting % NEW] =
-        VAR d = [Snap RECONC]
-        VAR uSet = VALUES( 'P1 Unit'[Unit Code] )
-        VAR auths =
-            CALCULATETABLE(
-                SUMMARIZE( FACT_RECONC, FACT_RECONC[AuthorisationId], FACT_RECONC[SGC_UnitCode], FACT_RECONC[Category] ),
-                DIM_DATE[Date] = d,
-                FACT_RECONC[Category] IN { "17A", "17B" },
-                TREATAS( uSet, FACT_RECONC[SGC_UnitCode] ),
-                FACT_RECONC[IsNoAuthorisation] = FALSE (),
-                NOT ISBLANK( FACT_RECONC[AuthorisationId] ) )
-        VAR perAuth =
-            CALCULATETABLE(
-                ADDCOLUMNS(
-                    SUMMARIZE( FACT_RECONC, FACT_RECONC[HeadOfficeSirisId], FACT_RECONC[AuthorisationId],
-                               FACT_RECONC[SGC_UnitCode], FACT_RECONC[Category] ),
-                    "@u", CALCULATE( MAX( FACT_RECONC[UtilEUR] ) ) ),
-                REMOVEFILTERS( DIM_COUNTERPARTY ),
-                TREATAS( auths, FACT_RECONC[AuthorisationId], FACT_RECONC[SGC_UnitCode], FACT_RECONC[Category] ),
-                DIM_DATE[Date] = d,
-                FACT_RECONC[IsEnvelopeTotal] = TRUE () )
-        VAR perCpy =
-            GROUPBY( perAuth, FACT_RECONC[HeadOfficeSirisId],
-                "@a", SUMX( CURRENTGROUP (), IF( FACT_RECONC[Category] = "17A", [@u] ) ),
-                "@b", SUMX( CURRENTGROUP (), IF( FACT_RECONC[Category] = "17B", [@u] ) ) )
-        RETURN
-            IF( NOT ISBLANK( d ),
-                DIVIDE( SUMX( perCpy, 2 * MIN( [@a], [@b] ) ), SUMX( perCpy, [@a] + [@b] ) ) )
-
-// ---- C0  Measures reading [Unit Selected] (Compares = yes -> breaks with several centres ticked) --
+// ---- T1a  per tenor bucket, whole book, 2026 YTD ------------------------------------------------------
 EVALUATE
-SELECTCOLUMNS(
-    FILTER( INFO.VIEW.MEASURES (), CONTAINSSTRING( [Expression], "Unit Selected" ) ),
-    "Measure", [Name],
-    "Table", [Table],
-    "Compares a code to it", IF( CONTAINSSTRING( [Expression], "SGC_UnitCode] = " ), "yes", "no" ),
-    "Patch 10 in", IF( CONTAINSSTRING( [Expression], "TREATAS( uSet" ), "set pattern", "" )
-)
-ORDER BY [Measure]
+    SUMMARIZECOLUMNS (
+        FACT_SALES[Tenor Bucket Sort], FACT_SALES[Tenor Bucket],
+        _ytd, _excl,
+        "Revenue", [P5 Revenue],
+        "TenorDays", [P5 Tenor Days],
+        "Tenor", [P5 Tenor Text]
+    )
+    ORDER BY FACT_SALES[Tenor Bucket Sort]
 
-// ---- C1  Netting line, whole book, last 5 RECONC dates, new default ticks -------------------------
+// ---- T1b  5Y bucket by line group (what the tooltip shows segment by segment) -------------------------
 EVALUATE
-SUMMARIZECOLUMNS(
-    DIM_DATE[Date],
-    TREATAS( _Last5, DIM_DATE[Date] ),
-    TREATAS( _NewTicks, 'P1 Unit'[Unit Code] ),
-    "Old (live) netting", [17AB Netting %],
-    "New netting", [17AB Netting % NEW],
-    "17A Util", [17A Util],
-    "17B Util", [17B Util]
-)
-ORDER BY DIM_DATE[Date] DESC
+    SUMMARIZECOLUMNS (
+        DIM_PRODUCTLINE[ProductLineGroupName],
+        TREATAS ( { "5Y" }, FACT_SALES[Tenor Bucket] ),
+        _ytd, _excl,
+        "Revenue", [P5 Revenue],
+        "TenorThisProduct", [P5 Tenor Text],
+        "TenorWholeBar", CALCULATE ( [P5 Tenor Text], ALLSELECTED ( DIM_PRODUCTLINE ) )
+    )
+    ORDER BY [Revenue] DESC
 
-// ---- C2  CPY-HF: old vs new default ticks ---------------------------------------------------------
+// ---- T2  Z1 vs F per year ---------------------------------------------------------------------------------
+// FullYear  = what Z1 shows with the period slicer on that whole calendar year.
+// F_SP      = what F shows for that year (1 Jan -> same day/month as the last sales date).
+// Gap       = FullYear - F_SP = revenue booked after that day/month (expected > 0 for every past year, 0 for 2026).
+// NoFamily  = revenue whose line group has no Family (would sit in a (Blank) segment of F).
 EVALUATE
-VAR f = TREATAS( { _Id }, DIM_COUNTERPARTY[HeadOfficeSirisId] )
-RETURN
-UNION(
-    ROW( "Ticks", "old 10 / 2155 / 2164",
-         "17A Util", CALCULATE( [17A Util], f, TREATAS( _OldTicks, 'P1 Unit'[Unit Code] ) ),
-         "17B Util", CALCULATE( [17B Util], f, TREATAS( _OldTicks, 'P1 Unit'[Unit Code] ) ),
-         "Netting NEW", CALCULATE( [17AB Netting % NEW], f, TREATAS( _OldTicks, 'P1 Unit'[Unit Code] ) ),
-         "Unit Label", CALCULATE( [Unit Label], f, TREATAS( _OldTicks, 'P1 Unit'[Unit Code] ) ) ),
-    ROW( "Ticks", "new 10 / 2140 / 2155 / 2164 / 2195",
-         "17A Util", CALCULATE( [17A Util], f, TREATAS( _NewTicks, 'P1 Unit'[Unit Code] ) ),
-         "17B Util", CALCULATE( [17B Util], f, TREATAS( _NewTicks, 'P1 Unit'[Unit Code] ) ),
-         "Netting NEW", CALCULATE( [17AB Netting % NEW], f, TREATAS( _NewTicks, 'P1 Unit'[Unit Code] ) ),
-         "Unit Label", CALCULATE( [Unit Label], f, TREATAS( _NewTicks, 'P1 Unit'[Unit Code] ) ) )
-)
-
-
-
-
-
-Rev RpR Annual =
--- Annualised revenue per €100k of average daily 16A utilisation, same window and selection.
--- Comparable across window lengths: revenue scaled to 365 days, divided by the average level of risk.
-VAR s = [Rev Window Start]
-VAR e = [Rev Window End]
-VAR days = INT( e - s ) + 1
-RETURN
-    IF( days > 0,
-        DIVIDE( [Rev Revenue EUR] * 365 / days, [16A Avg Util] ) * 100000 )
+    ADDCOLUMNS (
+        SELECTCOLUMNS ( GENERATESERIES ( 2023, 2026, 1 ), "Year", [Value] ),
+        "FullYear", VAR y = [Year] RETURN CALCULATE ( [P5 Revenue], _excl, REMOVEFILTERS ( DIM_DATE ), DIM_DATE[Year] = y ),
+        "F_SP", VAR y = [Year] RETURN CALCULATE ( [P5 F Revenue SP], _excl, REMOVEFILTERS ( DIM_DATE ), DIM_DATE[Year] = y ),
+        "Gap", VAR y = [Year] RETURN
+            CALCULATE ( [P5 Revenue], _excl, REMOVEFILTERS ( DIM_DATE ), DIM_DATE[Year] = y )
+                - CALCULATE ( [P5 F Revenue SP], _excl, REMOVEFILTERS ( DIM_DATE ), DIM_DATE[Year] = y ),
+        "NoFamily", VAR y = [Year] RETURN
+            CALCULATE ( [P5 Revenue], _excl, REMOVEFILTERS ( DIM_DATE ), DIM_DATE[Year] = y,
+                FILTER ( ALL ( DIM_PRODUCTLINE[Family] ), ISBLANK ( DIM_PRODUCTLINE[Family] ) || DIM_PRODUCTLINE[Family] = "" ) ),
+        "CutDate", FORMAT ( [Asof Sales Date], "d mmm" )
+    )
