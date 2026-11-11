@@ -1,5 +1,5 @@
 // =====================================================================================
-// P5W_MEASURES_TE2.csx  -  BUILD 2026-11-11b
+// P5W_MEASURES_TE2.csx  -  BUILD 2026-11-11c
 // P5-W Product & sales: 59 measures in table _Measures, folders P5\1 Base … P5\6 Format.
 // Contract: P5W_LAYOUT_AND_CONTRACT.md v1.2; preflight P5W_PREFLIGHT_RESULTS.md.
 //
@@ -248,13 +248,18 @@ VAR _r = [P5 F Revenue SP]
 VAR _ly = [P5 F Revenue SP LY]
 VAR _sh = [P5 F Share]
 VAR _shLy = DIVIDE ( _ly, CALCULATE ( [P5 F Revenue SP LY], REMOVEFILTERS ( DIM_PRODUCTLINE ) ) )
-VAR _g = IF ( _ly > 0, DIVIDE ( _r - _ly, _ly ) )
+-- 11 Nov: no comparison when the sales feed does not cover the start of the previous year (2022 starts late:
+-- 2023 showed +419 % FX, +1,198 % Other). Coverage is a property of the feed, so all page filters are removed.
+VAR _lyFirst = CALCULATE ( MIN ( FACT_SALES[DealDate] ), REMOVEFILTERS (),
+    DATESBETWEEN ( DIM_DATE[Date], DATE ( _y - 1, 1, 1 ), DATE ( _y - 1, 12, 31 ) ) )
+VAR _lyOk = NOT ISBLANK ( _lyFirst ) && _lyFirst <= DATE ( _y - 1, 1, 31 )
+VAR _g = IF ( _lyOk && _ly > 0, DIVIDE ( _r - _ly, _ly ) )
 RETURN
     IF ( NOT ISBLANK ( _r ),
         ""€"" & FORMAT ( _r / 1E6, ""#,0"" ) & ""m""
             & IF ( NOT ISBLANK ( _g ), "" · "" & FORMAT ( _g, ""+0%;-0%;0%"" ) & "" vs "" & FORMAT ( _y - 1, ""0"" ) )
             & "" · share "" & FORMAT ( _sh, ""0.0%"" )
-            & IF ( NOT ISBLANK ( _shLy ), "" ("" & FORMAT ( ( _sh - _shLy ) * 100, ""+0.0;-0.0;0.0"" ) & ""pp)"" ) )" });
+            & IF ( _lyOk && NOT ISBLANK ( _shLy ), "" ("" & FORMAT ( ( _sh - _shLy ) * 100, ""+0.0;-0.0;0.0"" ) & ""pp)"" ) )" });
 defs.Add(new[] { @"P5 F Subtitle", @"P5\3 Map and mix", @"", @"", @"VAR _a = [Asof Sales Date]
 RETURN ""each year 1 Jan → "" & FORMAT ( _a, ""d mmm"" ) & "" · ignores the page period""" });
 defs.Add(new[] { @"P5 W12 End", @"P5\4 Cards", @"d mmm yyyy", @"", @"-- Cards C1/C2 look at the 12 COMPLETE calendar months up to the window end (contract 1.2).
@@ -550,7 +555,7 @@ foreach (var d in defs) {
         created++; rep.AppendLine((dryRun ? "WOULD CREATE  " : "created  ") + d[0]);
     }
 }
-Info("P5W_MEASURES  BUILD 2026-11-11b" + (dryRun ? "   (DRY RUN - nothing changed)" : "") + "\n"
+Info("P5W_MEASURES  BUILD 2026-11-11c" + (dryRun ? "   (DRY RUN - nothing changed)" : "") + "\n"
      + "created " + created + " · updated " + updated + " · unchanged " + same + " (of " + defs.Count + ")\n\n"
      + rep.ToString() + "\n"
      + (dryRun ? "Set dryRun = false and run again to apply." : "Next: Ctrl+S, then P5W_MEASURES_CHECK.dax."));
