@@ -1,90 +1,150 @@
-P5W PATCH 01 (Desktop only) - I "Revenue by tenor": average tenor inside each bar in the tooltip      BUILD 2026-11-11a
-=====================================================================================================================
-2 NEW measures in table _Measures + 1 visual step. No table or column. Reads the existing [P5 Tenor Text]
-(nominal-weighted average of DealLifeDays, rows with nominal <= the EUR 50bn cap - same rule as the scorecard
-"avg tenor" column), so the tooltip and Z1 always agree.
- 
-NEW measure : select table _Measures > Table tools > New measure > Ctrl+A > paste the block > Enter.
-              Then (Measure tools ribbon) Display folder P5\2 Product, format Text.
-UNDO: delete the two measures.
- 
-==== 1/2  NEW
-P5 I Tenor Bar =
--- Average tenor of the WHOLE bar under the cursor (all product line groups in that tenor bucket), whatever segment
--- is hovered. ALLSELECTED keeps the page / slicer / cross-filter selection and only drops the segment's own
--- line-group filter. Example on 5Y: "3.2y" tells you whether the bucket is mostly 2y or mostly 4y deals.
-CALCULATE ( [P5 Tenor Text], ALLSELECTED ( DIM_PRODUCTLINE ) )
- 
-==== 2/2  NEW
-P5 I Tenor Product =
--- Average tenor of the hovered segment only (that product line group, in that tenor bucket).
-[P5 Tenor Text]
- 
-==== VISUAL STEP - I Tenor tooltip
-1. Select I (Revenue by tenor) > Build pane > Tooltips well: drag in P5 I Tenor Bar, then P5 I Tenor Product.
-2. Rename them in the well (double-click): "Avg tenor · whole bar" and "Avg tenor · this product".
-3. Hover the 5Y bar on any segment -> tooltip reads, for example:
-     Tenor Bucket          5Y
-     ProductLineGroupName  EUR RATES
-     P5 Revenue            €98.4m
-     Avg tenor · whole bar     3.1y
-     Avg tenor · this product  4.2y
-   (Figures are an illustration, not reference values.)
- 
-==== CHECKS (P5W_PATCH_01_CHECK.dax, part T1)
-T1 Per bucket, 2026 YTD, Exclude: average tenor sits inside the bucket's range (5Y between 1.0y and 5.0y, 30Y between
-   10y and 50y). A figure outside its range = rows with no nominal or above the cap dominate that bucket - flag it.
+P5W Concentration =
+DATATABLE (
+    "Option", STRING,
+    "Order", INTEGER,
+    { { "Client", 1 }, { "Deal", 2 }, { "Entity", 3 } }
+)
 
 
 
 // =====================================================================================
-// P5W_PATCH_01_CHECK.dax  -  BUILD 2026-11-11a  -  read-only
-// T1  tenor tooltip: average tenor per bucket (whole book) and per bucket x line group.
-// T2  scorecard (Z1) vs mix-by-year (F) per year: where the gap comes from.
-// RUN: DAX query view > paste > Run. 3 result tabs. Intra-group = Exclude (the page default).
+// P5W_MEASURES_CHECK.dax  -  BUILD 2026-11-04b  -  read-only, after P5W_MEASURES_TE2.csx (+ Ctrl+S).
+// 11 result tabs. Window = 2026 "This year" (1 Jan → 31 Dec, capped at the last sales date by the measures).
+// Reference figures (data to 2 Nov) are in the comments; a new day of data moves them slightly.
+// NOTE THE SECONDS for K6 and K7 (status bar).
 // =====================================================================================
-DEFINE
-    VAR _ytd = DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) )
-    VAR _excl = TREATAS ( { "Exclude" }, 'P5W IntraGroup'[Option] )
 
-// ---- T1a  per tenor bucket, whole book, 2026 YTD ------------------------------------------------------
+// ---- K0 nothing broken -------------------------------------------------------------------------------
+// Expect: P5Measures 59, Broken 0.
 EVALUATE
-    SUMMARIZECOLUMNS (
-        FACT_SALES[Tenor Bucket Sort], FACT_SALES[Tenor Bucket],
-        _ytd, _excl,
-        "Revenue", [P5 Revenue],
-        "TenorDays", [P5 Tenor Days],
-        "Tenor", [P5 Tenor Text]
+    ROW (
+        "P5Measures", COUNTROWS ( FILTER ( INFO.MEASURES (), LEFT ( [Name], 3 ) = "P5 " ) ),
+        "Broken", COUNTROWS ( FILTER ( INFO.MEASURES (), [State] <> 1 ) ) + 0
     )
-    ORDER BY FACT_SALES[Tenor Bucket Sort]
 
-// ---- T1b  5Y bucket by line group (what the tooltip shows segment by segment) -------------------------
-EVALUATE
-    SUMMARIZECOLUMNS (
-        DIM_PRODUCTLINE[ProductLineGroupName],
-        TREATAS ( { "5Y" }, FACT_SALES[Tenor Bucket] ),
-        _ytd, _excl,
-        "Revenue", [P5 Revenue],
-        "TenorThisProduct", [P5 Tenor Text],
-        "TenorWholeBar", CALCULATE ( [P5 Tenor Text], ALLSELECTED ( DIM_PRODUCTLINE ) )
-    )
-    ORDER BY [Revenue] DESC
-
-// ---- T2  Z1 vs F per year ---------------------------------------------------------------------------------
-// FullYear  = what Z1 shows with the period slicer on that whole calendar year.
-// F_SP      = what F shows for that year (1 Jan -> same day/month as the last sales date).
-// Gap       = FullYear - F_SP = revenue booked after that day/month (expected > 0 for every past year, 0 for 2026).
-// NoFamily  = revenue whose line group has no Family (would sit in a (Blank) segment of F).
+// ---- K1 base figures, Exclude vs Include ------------------------------------------------------------------
+// Expect Exclude: Revenue ≈ €2,094m, LY ≈ €1,898m, Charges ≈ −€104m. Include: ≈ €2,446m, LY ≈ €1,954m (PF-05/06).
 EVALUATE
     ADDCOLUMNS (
-        SELECTCOLUMNS ( GENERATESERIES ( 2023, 2026, 1 ), "Year", [Value] ),
-        "FullYear", VAR y = [Year] RETURN CALCULATE ( [P5 Revenue], _excl, REMOVEFILTERS ( DIM_DATE ), DIM_DATE[Year] = y ),
-        "F_SP", VAR y = [Year] RETURN CALCULATE ( [P5 F Revenue SP], _excl, REMOVEFILTERS ( DIM_DATE ), DIM_DATE[Year] = y ),
-        "Gap", VAR y = [Year] RETURN
-            CALCULATE ( [P5 Revenue], _excl, REMOVEFILTERS ( DIM_DATE ), DIM_DATE[Year] = y )
-                - CALCULATE ( [P5 F Revenue SP], _excl, REMOVEFILTERS ( DIM_DATE ), DIM_DATE[Year] = y ),
-        "NoFamily", VAR y = [Year] RETURN
-            CALCULATE ( [P5 Revenue], _excl, REMOVEFILTERS ( DIM_DATE ), DIM_DATE[Year] = y,
-                FILTER ( ALL ( DIM_PRODUCTLINE[Family] ), ISBLANK ( DIM_PRODUCTLINE[Family] ) || DIM_PRODUCTLINE[Family] = "" ) ),
-        "CutDate", FORMAT ( [Asof Sales Date], "d mmm" )
+        SELECTCOLUMNS ( { "Exclude", "Include" }, "Mode", [Value] ),
+        "Revenue", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Revenue], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "RevenueLY", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Revenue LY], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "vsLY", VAR k1 = [Mode] RETURN CALCULATE ( [P5 vs LY %], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "Deals", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Deals], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "CPHs", VAR k1 = [Mode] RETURN CALCULATE ( [P5 CPHs], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "RevBps", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Revenue bps], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "Tenor", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Tenor Text], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "Ticket", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Avg Ticket Text], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "Charges", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Charges], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+        "Subtitle", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Z1 Subtitle], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) )
     )
+
+// ---- K2 scorecard by product group (Exclude, default) -----------------------------------------------------
+// Expect Rev / vsLY = PF-06 RevExcl / GrowthExcl (GRI FI €356m +27 %, EUR rates €183m +85 %, Securitisation €159m −41 %);
+// Tenor ≈ PF-07b Tenor_cap (EUR rates 1,602 d → 4.4y, Forex linear 127 d → 4m, GRI FI 44 d → 1m); Charges only on
+// Securitisation (and a little elsewhere). Top5Share ≥ 55 % = thin product.
+EVALUATE
+    SUMMARIZECOLUMNS (
+        DIM_PRODUCTLINE[Family], DIM_PRODUCTLINE[ProductLineGroupName],
+        DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ),
+        "Rev", [P5 Revenue], "vsLY", [P5 vs LY %], "RevBps", [P5 Revenue bps], "MarkupBps", [P5 Markup bps],
+        "TenorDays", [P5 Tenor Days], "Tenor", [P5 Tenor Text], "Ticket", [P5 Avg Ticket Text], "CPHs", [P5 CPHs],
+        "Charges", [P5 Charges Label], "Top5Share", [P5 Z6 Top5 Share], "Top1", [P5 Z6 Top1 Label]
+    )
+    ORDER BY [Rev] DESC
+
+// ---- K3 revenue map periods (whole book, Exclude) -----------------------------------------------------------
+// Expect YTD = K1 Exclude Revenue; Same period LY = K1 Exclude RevenueLY; Full year LY = 2025 full year.
+EVALUATE
+    ADDCOLUMNS (
+        SELECTCOLUMNS ( { "YTD", "Same period LY", "Full year LY" }, "Period", [Value] ),
+        "Start", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Start], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
+        "End", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map End], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
+        "Revenue", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Revenue], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
+        "Prior", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Revenue Prior], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
+        "Growth", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Growth %], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
+        "Colour", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Colour], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
+        "Title", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Title], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) )
+    )
+
+// ---- K4 mix by year: each year's shares add up to 100 % -------------------------------------------------------
+EVALUATE
+    FILTER (
+        SUMMARIZECOLUMNS (
+            DIM_DATE[Year], DIM_PRODUCTLINE[Family Order], DIM_PRODUCTLINE[Family],
+            "Share", [P5 F Share], "Label", [P5 F Share Label] ),
+        DIM_DATE[Year] >= 2023 && DIM_DATE[Year] <= 2026 )
+    ORDER BY DIM_DATE[Year], DIM_PRODUCTLINE[Family Order]
+
+// ---- K5 desks: exactly 8 rows carry a value; subtitle -----------------------------------------------------------
+EVALUATE
+    FILTER (
+        SUMMARIZECOLUMNS ( FACT_SALES[DeskShortName],
+            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ),
+            "Top8", [P5 H Revenue Top8], "Revenue", [P5 Revenue] ),
+        NOT ISBLANK ( [Top8] ) )
+    ORDER BY [Top8] DESC
+EVALUATE
+    CALCULATETABLE ( ROW ( "Subtitle", [P5 H Subtitle], "Undated", [P5 I Subtitle] ),
+        DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) )
+
+// ---- K6 TIMING: the whole scorecard at product line level (39 rows, sparkline included). NOTE THE SECONDS ---------
+EVALUATE
+    SUMMARIZECOLUMNS (
+        FACT_SALES[ProductLineLongName],
+        DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ),
+        "Rev", [P5 Revenue], "vsLY", [P5 vs LY %], "Spark", [P5 Z1 Sparkline], "RevBps", [P5 Revenue bps],
+        "Tenor", [P5 Tenor Text], "Ticket", [P5 Avg Ticket Text], "CPHs", [P5 CPHs]
+    )
+    ORDER BY [Rev] DESC
+
+// ---- K7 TIMING: the three cards, page default (Exclude). NOTE THE SECONDS --------------------------------------------
+// Expect C1 ≈ 77 %, "1,304 CPHs …"; C2 ≈ €30bn, "≈ 1,400 CPHs · 6 % of 16A limit"; C3 ≈ 11 %, "largest deal €12.5m · 24 Sep".
+EVALUATE
+    CALCULATETABLE (
+        ROW (
+            "C1", [P5 C1 Recurring Share], "C1Detail", [P5 C1 Detail],
+            "C2", [P5 C2 Silent Limit], "C2Detail", [P5 C2 Detail],
+            "C3", [P5 C3 Big Ticket Share], "C3Detail", [P5 C3 Detail]
+        ),
+        DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) )
+    )
+
+// ---- K8 mix by year, same cut every year (Exclude) -----------------------------------------------------------------
+// Expect: Share per year adds to 100 %; 2026 RevSP total ≈ K1 Exclude Revenue; 2025 total ≈ K1 Exclude RevenueLY.
+EVALUATE
+    FILTER (
+        SUMMARIZECOLUMNS (
+            DIM_DATE[Year], DIM_PRODUCTLINE[Family Order], DIM_PRODUCTLINE[Family],
+            "RevSP", [P5 F Revenue SP], "Share", [P5 F Share], "Tooltip", [P5 F Tooltip] ),
+        DIM_DATE[Year] >= 2023 && DIM_DATE[Year] <= 2026 )
+    ORDER BY DIM_DATE[Year], DIM_PRODUCTLINE[Family Order]
+
+// ---- K9 concentration switch: the three modes by product group (Exclude). Top1 + Next4 + Rest = Revenue in each mode ---
+EVALUATE
+    VAR k9_rows =
+        CROSSJOIN ( SELECTCOLUMNS ( { "Client", "Deal", "Entity" }, "Mode", [Value] ), VALUES ( DIM_PRODUCTLINE[ProductLineGroupName] ) )
+    RETURN
+        FILTER (
+            ADDCOLUMNS ( k9_rows,
+                "Revenue", VAR k9_m = [Mode] RETURN CALCULATE ( [P5 Revenue], TREATAS ( { k9_m }, 'P5W Concentration'[Option] ),
+                    DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+                "Top1", VAR k9_m = [Mode] RETURN CALCULATE ( [P5 Z6 Top1], TREATAS ( { k9_m }, 'P5W Concentration'[Option] ),
+                    DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+                "Top5Share", VAR k9_m = [Mode] RETURN CALCULATE ( [P5 Z6 Top5 Share], TREATAS ( { k9_m }, 'P5W Concentration'[Option] ),
+                    DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
+                "Top1Label", VAR k9_m = [Mode] RETURN CALCULATE ( [P5 Z6 Top1 Label], TREATAS ( { k9_m }, 'P5W Concentration'[Option] ),
+                    DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) )
+            ),
+            [Revenue] > 1E7 )
+    ORDER BY [Mode], [Revenue] DESC
