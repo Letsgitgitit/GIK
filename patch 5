@@ -40,3 +40,47 @@ RETURN
         "Low Grade", IF ( [@b] = 5, 1, 0 ),
         "Internal", SWITCH ( [@b], 1, "A+ A", 2, "B+ B", 3, "C+ C C-", 4, "D+ D", 5, "D- E F Z", 6, "blank / not identified", "other" )
     )
+
+
+
+
+
+
+
+// =====================================================================================
+// P6W_SETUP_PATCH_06.dax  -  BUILD 2026-11-11a  -  R1 "Compare" row label follows R1a (1M ago … 2Y ago)
+// Run BEFORE P6A_MEASURES_TE2.csx build 11a (the script stops if P6W R Row[Days] is missing).
+// How it works: one compare row per R1a window. P6 R1 Collateral returns blank on the rows that do not match the R1a
+// pick, and a bar chart hides a category with no value, so R1 always shows 2 bars: "As of" + "<window> ago".
+// =====================================================================================
+
+// ---- S1 select the table P6W R Row ▸ replace its formula ▸ Enter
+
+P6W R Row =
+DATATABLE (
+    "Row", STRING,
+    "Order", INTEGER,
+    "Days", INTEGER,
+    {
+        { "As of", 1, 0 },
+        { "1M ago", 2, 30 },
+        { "3M ago", 2, 91 },
+        { "6M ago", 2, 182 },
+        { "1Y ago", 2, 365 },
+        { "2Y ago", 2, 730 }
+    }
+)
+
+// ---- S2 sort and hide
+// P6W R Row[Row] ▸ Sort by column ▸ Order (still valid: each Row has one Order). Hide Order and Days.
+// R1 ▸ Format ▸ Y axis: nothing to change. If an empty compare bar slot appears, R1 ▸ Y-axis field ▸ "Show items with no
+// data" must be OFF (default).
+
+// ---- S3 then: Tabular Editor ▸ run P6A_MEASURES_TE2.csx (build 11a) ▸ Ctrl+S in Power BI.
+
+// ---- S4 check: expect 2 rows, the second labelled with the R1a window ("3M ago" when nothing is picked)
+EVALUATE
+    SUMMARIZECOLUMNS ( 'P6W R Row'[Row], TREATAS ( { "Hedge fund" }, DIM_COUNTERPARTY[HF Scope] ),
+        TREATAS ( { "6M" }, 'P6W R Compare'[Window] ),
+        "Face", [P6 R1 Collateral] )
+// → "As of" ≈ €63bn and "6M ago" only.
