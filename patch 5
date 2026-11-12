@@ -1,150 +1,116 @@
-P5W Concentration =
-DATATABLE (
-    "Option", STRING,
-    "Order", INTEGER,
-    { { "Client", 1 }, { "Deal", 2 }, { "Entity", 3 } }
-)
-
-
-
 // =====================================================================================
-// P5W_MEASURES_CHECK.dax  -  BUILD 2026-11-04b  -  read-only, after P5W_MEASURES_TE2.csx (+ Ctrl+S).
-// 11 result tabs. Window = 2026 "This year" (1 Jan → 31 Dec, capped at the last sales date by the measures).
-// Reference figures (data to 2 Nov) are in the comments; a new day of data moves them slightly.
-// NOTE THE SECONDS for K6 and K7 (status bar).
+// P6A_PAPER_RATING_CHECK.dax  -  BUILD 2026-11-10a  -  read-only (DAX query view > paste > Run)
+// Question: can FACT_SALES paper fields (S&P / Moody's / industry / country) rate and classify the collateral that hedge
+// funds give us in reverse repo (FACT_ALLREPO, 17B side, latest file), matched on ISIN?
+// NB the Sales headers are "Paper Issuer S&P Rating" / "Paper Issuer Moodys Rating": ISSUER ratings from the agencies,
+// not the rating of each bond. Same as the bond for govies / agencies / senior debt; can differ for covered or sub debt.
+// Scope: HF Scope = "Hedge fund", 07L, BuySell "S" (17B, as in the P6 measures), Sponsored excluded. The A3b envelope
+// exclusion is NOT applied here (check only), so totals sit slightly above R1.
+// Column names assumed: FACT_ALLREPO[CodesinSJ] (ISIN); FACT_SALES[ISINCode], [PaperSPRating], [PaperMoodysRating],
+// [PaperIssuerIndustry], [PaperIssuerCountry]. If one errors, replace it with the name in your Data pane and flag it.
+// 5 result tabs:
+//   RC1 coverage: face with an ISIN, found in Sales, with an S&P / Moody's rating
+//   RC2 internal rating (Rating_ssj) x agency grade (S&P first, Moody's if no S&P), face  -> reconciliation
+//   RC3 our issuer group (P6W Issuer Map) x Sales industry, face  -> can Sales classify the "Unclassified" collateral
+//   RC4 the 25 largest ISINs with no agency rating
+//   RC5 ISINs with more than one rating / industry combination in Sales (rating changes or data noise)
 // =====================================================================================
+DEFINE
+    VAR _d = CALCULATE ( MAX ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS () )
+    VAR _sc =
+        CALCULATETABLE ( VALUES ( DIM_COUNTERPARTY[HeadOfficeSirisId] ), REMOVEFILTERS (),
+            DIM_COUNTERPARTY[HF Scope] = "Hedge fund" )
+    VAR _coll0 =
+        CALCULATETABLE (
+            ADDCOLUMNS (
+                SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[CodesinSJ], FACT_ALLREPO[IssuerId], FACT_ALLREPO[IssuerName],
+                    FACT_ALLREPO[Rating_ssj] ),
+                "@face", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ) ),
+            REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L",
+            FACT_ALLREPO[BuySell] = "S",
+            FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) ),
+            TREATAS ( _sc, FACT_ALLREPO[HeadOfficeSirisId] ) )
+    VAR _coll =
+        SELECTCOLUMNS ( _coll0,
+            "ISIN", TRIM ( FACT_ALLREPO[CodesinSJ] & "" ), "IssuerId", FACT_ALLREPO[IssuerId],
+            "Issuer", FACT_ALLREPO[IssuerName], "Internal", FACT_ALLREPO[Rating_ssj], "Face", [@face] )
+    VAR _isins = DISTINCT ( SELECTCOLUMNS ( FILTER ( _coll, [ISIN] <> "" ), "i", [ISIN] ) )
+    VAR _s0 =
+        CALCULATETABLE (
+            SUMMARIZE ( FACT_SALES, FACT_SALES[ISINCode], FACT_SALES[PaperSPRating], FACT_SALES[PaperMoodysRating],
+                FACT_SALES[PaperIssuerIndustry], FACT_SALES[PaperIssuerCountry] ),
+            REMOVEFILTERS (), TREATAS ( _isins, FACT_SALES[ISINCode] ) )
+    VAR _s1 =
+        GROUPBY ( _s0, FACT_SALES[ISINCode],
+            "SP", MAXX ( CURRENTGROUP (),
+                IF ( TRIM ( FACT_SALES[PaperSPRating] & "" ) IN { "", "NR", "N.R.", "WR", "#" }, BLANK (), TRIM ( FACT_SALES[PaperSPRating] & "" ) ) ),
+            "Moodys", MAXX ( CURRENTGROUP (),
+                IF ( TRIM ( FACT_SALES[PaperMoodysRating] & "" ) IN { "", "NR", "N.R.", "WR", "#" }, BLANK (), TRIM ( FACT_SALES[PaperMoodysRating] & "" ) ) ),
+            "Industry", MAXX ( CURRENTGROUP (), FACT_SALES[PaperIssuerIndustry] ),
+            "SCountry", MAXX ( CURRENTGROUP (), FACT_SALES[PaperIssuerCountry] ),
+            "Variants", SUMX ( CURRENTGROUP (), 1 ) )
+    VAR _s =
+        SELECTCOLUMNS ( _s1, "sISIN", FACT_SALES[ISINCode], "sSP", [SP], "sMoodys", [Moodys],
+            "sIndustry", [Industry], "sCountry", [SCountry], "sVariants", [Variants] )
+    VAR _j =
+        ADDCOLUMNS ( _coll,
+            "InSales", VAR i = [ISIN] RETURN i <> "" && NOT ISEMPTY ( FILTER ( _s, [sISIN] = i ) ),
+            "SP", VAR i = [ISIN] RETURN MAXX ( FILTER ( _s, [sISIN] = i ), [sSP] ),
+            "Moodys", VAR i = [ISIN] RETURN MAXX ( FILTER ( _s, [sISIN] = i ), [sMoodys] ),
+            "Industry", VAR i = [ISIN] RETURN MAXX ( FILTER ( _s, [sISIN] = i ), [sIndustry] ),
+            "Group", LOOKUPVALUE ( 'P6W Issuer Map'[Group], 'P6W Issuer Map'[IssuerId], [IssuerId] ) )
+    VAR _g =
+        ADDCOLUMNS ( _j,
+            "SPGrade",
+                VAR r = UPPER ( [SP] & "" )
+                RETURN SWITCH ( TRUE (), r = "", "(none)",
+                    LEFT ( r, 3 ) = "AAA", "1 AAA", LEFT ( r, 2 ) = "AA", "2 AA", LEFT ( r, 3 ) = "BBB", "4 BBB",
+                    LEFT ( r, 2 ) = "BB", "5 BB", LEFT ( r, 1 ) = "A", "3 A", LEFT ( r, 1 ) = "B", "6 B",
+                    LEFT ( r, 1 ) IN { "C", "D" }, "7 CCC & below", "(none)" ),
+            "MGrade",
+                VAR r = UPPER ( [Moodys] & "" )
+                RETURN SWITCH ( TRUE (), r = "", "(none)",
+                    LEFT ( r, 3 ) = "AAA", "1 AAA", LEFT ( r, 2 ) = "AA", "2 AA", LEFT ( r, 3 ) = "BAA", "4 BBB",
+                    LEFT ( r, 2 ) = "BA", "5 BB", LEFT ( r, 1 ) = "A", "3 A", LEFT ( r, 1 ) = "B", "6 B",
+                    LEFT ( r, 1 ) = "C", "7 CCC & below", "(none)" ) )
+    VAR _h =
+        ADDCOLUMNS ( _g,
+            "Agency", IF ( [SPGrade] <> "(none)", [SPGrade], [MGrade] ),
+            "AgencySource", IF ( [SPGrade] <> "(none)", "S&P", IF ( [MGrade] <> "(none)", "Moody's", "none" ) ) )
 
-// ---- K0 nothing broken -------------------------------------------------------------------------------
-// Expect: P5Measures 59, Broken 0.
+// ---- RC1 coverage (EUR face) ----------------------------------------------------------------------------------------
 EVALUATE
-    ROW (
-        "P5Measures", COUNTROWS ( FILTER ( INFO.MEASURES (), LEFT ( [Name], 3 ) = "P5 " ) ),
-        "Broken", COUNTROWS ( FILTER ( INFO.MEASURES (), [State] <> 1 ) ) + 0
-    )
+    ROW ( "AsOf", _d,
+        "Face", SUMX ( _h, [Face] ),
+        "Face_withISIN", SUMX ( FILTER ( _h, [ISIN] <> "" ), [Face] ),
+        "Face_inSales", SUMX ( FILTER ( _h, [InSales] ), [Face] ),
+        "Face_SP", SUMX ( FILTER ( _h, [SPGrade] <> "(none)" ), [Face] ),
+        "Face_Moodys", SUMX ( FILTER ( _h, [MGrade] <> "(none)" ), [Face] ),
+        "Face_either", SUMX ( FILTER ( _h, [AgencySource] <> "none" ), [Face] ),
+        "ISINs", COUNTROWS ( _isins ), "ISINs_inSales", COUNTROWS ( _s ),
+        "SP_vs_Moodys_differ", SUMX ( FILTER ( _h, [SPGrade] <> "(none)" && [MGrade] <> "(none)" && [SPGrade] <> [MGrade] ), [Face] ) )
 
-// ---- K1 base figures, Exclude vs Include ------------------------------------------------------------------
-// Expect Exclude: Revenue ≈ €2,094m, LY ≈ €1,898m, Charges ≈ −€104m. Include: ≈ €2,446m, LY ≈ €1,954m (PF-05/06).
+// ---- RC2 internal x agency grade ------------------------------------------------------------------------------------
 EVALUATE
-    ADDCOLUMNS (
-        SELECTCOLUMNS ( { "Exclude", "Include" }, "Mode", [Value] ),
-        "Revenue", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Revenue], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
-            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
-        "RevenueLY", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Revenue LY], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
-            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
-        "vsLY", VAR k1 = [Mode] RETURN CALCULATE ( [P5 vs LY %], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
-            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
-        "Deals", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Deals], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
-            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
-        "CPHs", VAR k1 = [Mode] RETURN CALCULATE ( [P5 CPHs], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
-            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
-        "RevBps", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Revenue bps], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
-            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
-        "Tenor", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Tenor Text], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
-            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
-        "Ticket", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Avg Ticket Text], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
-            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
-        "Charges", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Charges], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
-            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
-        "Subtitle", VAR k1 = [Mode] RETURN CALCULATE ( [P5 Z1 Subtitle], TREATAS ( { k1 }, 'P5W IntraGroup'[Option] ),
-            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) )
-    )
+    GROUPBY ( _h, [Internal], [Agency], "Face", SUMX ( CURRENTGROUP (), [Face] ), "Lines", SUMX ( CURRENTGROUP (), 1 ) )
+    ORDER BY [Internal], [Agency]
 
-// ---- K2 scorecard by product group (Exclude, default) -----------------------------------------------------
-// Expect Rev / vsLY = PF-06 RevExcl / GrowthExcl (GRI FI €356m +27 %, EUR rates €183m +85 %, Securitisation €159m −41 %);
-// Tenor ≈ PF-07b Tenor_cap (EUR rates 1,602 d → 4.4y, Forex linear 127 d → 4m, GRI FI 44 d → 1m); Charges only on
-// Securitisation (and a little elsewhere). Top5Share ≥ 55 % = thin product.
+// ---- RC3 our issuer group x Sales industry (top 40 by face) -------------------------------------------------------
 EVALUATE
-    SUMMARIZECOLUMNS (
-        DIM_PRODUCTLINE[Family], DIM_PRODUCTLINE[ProductLineGroupName],
-        DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ),
-        "Rev", [P5 Revenue], "vsLY", [P5 vs LY %], "RevBps", [P5 Revenue bps], "MarkupBps", [P5 Markup bps],
-        "TenorDays", [P5 Tenor Days], "Tenor", [P5 Tenor Text], "Ticket", [P5 Avg Ticket Text], "CPHs", [P5 CPHs],
-        "Charges", [P5 Charges Label], "Top5Share", [P5 Z6 Top5 Share], "Top1", [P5 Z6 Top1 Label]
-    )
-    ORDER BY [Rev] DESC
+    TOPN ( 40,
+        GROUPBY ( _h, [Group], [Industry], "Face", SUMX ( CURRENTGROUP (), [Face] ) ),
+        [Face], DESC )
+    ORDER BY [Face] DESC
 
-// ---- K3 revenue map periods (whole book, Exclude) -----------------------------------------------------------
-// Expect YTD = K1 Exclude Revenue; Same period LY = K1 Exclude RevenueLY; Full year LY = 2025 full year.
+// ---- RC4 the 25 largest ISINs with no agency rating -----------------------------------------------------------------
 EVALUATE
-    ADDCOLUMNS (
-        SELECTCOLUMNS ( { "YTD", "Same period LY", "Full year LY" }, "Period", [Value] ),
-        "Start", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Start], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
-        "End", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map End], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
-        "Revenue", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Revenue], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
-        "Prior", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Revenue Prior], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
-        "Growth", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Growth %], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
-        "Colour", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Colour], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) ),
-        "Title", VAR k3 = [Period] RETURN CALCULATE ( [P5 Map Title], TREATAS ( { k3 }, 'P5W Map Period'[Period] ) )
-    )
+    TOPN ( 25,
+        SELECTCOLUMNS ( FILTER ( _h, [AgencySource] = "none" ),
+            "ISIN", [ISIN], "Issuer", [Issuer], "Internal", [Internal], "Group", [Group], "InSales", [InSales], "Face", [Face] ),
+        [Face], DESC )
+    ORDER BY [Face] DESC
 
-// ---- K4 mix by year: each year's shares add up to 100 % -------------------------------------------------------
+// ---- RC5 ISINs with several rating / industry combinations in Sales ------------------------------------------------
 EVALUATE
-    FILTER (
-        SUMMARIZECOLUMNS (
-            DIM_DATE[Year], DIM_PRODUCTLINE[Family Order], DIM_PRODUCTLINE[Family],
-            "Share", [P5 F Share], "Label", [P5 F Share Label] ),
-        DIM_DATE[Year] >= 2023 && DIM_DATE[Year] <= 2026 )
-    ORDER BY DIM_DATE[Year], DIM_PRODUCTLINE[Family Order]
-
-// ---- K5 desks: exactly 8 rows carry a value; subtitle -----------------------------------------------------------
-EVALUATE
-    FILTER (
-        SUMMARIZECOLUMNS ( FACT_SALES[DeskShortName],
-            DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ),
-            "Top8", [P5 H Revenue Top8], "Revenue", [P5 Revenue] ),
-        NOT ISBLANK ( [Top8] ) )
-    ORDER BY [Top8] DESC
-EVALUATE
-    CALCULATETABLE ( ROW ( "Subtitle", [P5 H Subtitle], "Undated", [P5 I Subtitle] ),
-        DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) )
-
-// ---- K6 TIMING: the whole scorecard at product line level (39 rows, sparkline included). NOTE THE SECONDS ---------
-EVALUATE
-    SUMMARIZECOLUMNS (
-        FACT_SALES[ProductLineLongName],
-        DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ),
-        "Rev", [P5 Revenue], "vsLY", [P5 vs LY %], "Spark", [P5 Z1 Sparkline], "RevBps", [P5 Revenue bps],
-        "Tenor", [P5 Tenor Text], "Ticket", [P5 Avg Ticket Text], "CPHs", [P5 CPHs]
-    )
-    ORDER BY [Rev] DESC
-
-// ---- K7 TIMING: the three cards, page default (Exclude). NOTE THE SECONDS --------------------------------------------
-// Expect C1 ≈ 77 %, "1,304 CPHs …"; C2 ≈ €30bn, "≈ 1,400 CPHs · 6 % of 16A limit"; C3 ≈ 11 %, "largest deal €12.5m · 24 Sep".
-EVALUATE
-    CALCULATETABLE (
-        ROW (
-            "C1", [P5 C1 Recurring Share], "C1Detail", [P5 C1 Detail],
-            "C2", [P5 C2 Silent Limit], "C2Detail", [P5 C2 Detail],
-            "C3", [P5 C3 Big Ticket Share], "C3Detail", [P5 C3 Detail]
-        ),
-        DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) )
-    )
-
-// ---- K8 mix by year, same cut every year (Exclude) -----------------------------------------------------------------
-// Expect: Share per year adds to 100 %; 2026 RevSP total ≈ K1 Exclude Revenue; 2025 total ≈ K1 Exclude RevenueLY.
-EVALUATE
-    FILTER (
-        SUMMARIZECOLUMNS (
-            DIM_DATE[Year], DIM_PRODUCTLINE[Family Order], DIM_PRODUCTLINE[Family],
-            "RevSP", [P5 F Revenue SP], "Share", [P5 F Share], "Tooltip", [P5 F Tooltip] ),
-        DIM_DATE[Year] >= 2023 && DIM_DATE[Year] <= 2026 )
-    ORDER BY DIM_DATE[Year], DIM_PRODUCTLINE[Family Order]
-
-// ---- K9 concentration switch: the three modes by product group (Exclude). Top1 + Next4 + Rest = Revenue in each mode ---
-EVALUATE
-    VAR k9_rows =
-        CROSSJOIN ( SELECTCOLUMNS ( { "Client", "Deal", "Entity" }, "Mode", [Value] ), VALUES ( DIM_PRODUCTLINE[ProductLineGroupName] ) )
-    RETURN
-        FILTER (
-            ADDCOLUMNS ( k9_rows,
-                "Revenue", VAR k9_m = [Mode] RETURN CALCULATE ( [P5 Revenue], TREATAS ( { k9_m }, 'P5W Concentration'[Option] ),
-                    DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
-                "Top1", VAR k9_m = [Mode] RETURN CALCULATE ( [P5 Z6 Top1], TREATAS ( { k9_m }, 'P5W Concentration'[Option] ),
-                    DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
-                "Top5Share", VAR k9_m = [Mode] RETURN CALCULATE ( [P5 Z6 Top5 Share], TREATAS ( { k9_m }, 'P5W Concentration'[Option] ),
-                    DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) ),
-                "Top1Label", VAR k9_m = [Mode] RETURN CALCULATE ( [P5 Z6 Top1 Label], TREATAS ( { k9_m }, 'P5W Concentration'[Option] ),
-                    DATESBETWEEN ( DIM_DATE[Date], DATE ( 2026, 1, 1 ), DATE ( 2026, 12, 31 ) ) )
-            ),
-            [Revenue] > 1E7 )
-    ORDER BY [Mode], [Revenue] DESC
+    TOPN ( 20, FILTER ( _s, [sVariants] > 1 ), [sVariants], DESC )
+    ORDER BY [sVariants] DESC
