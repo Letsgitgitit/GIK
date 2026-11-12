@@ -1,7 +1,7 @@
 // =====================================================================================
-// P6A_K3Y_CHECK.dax  -  BUILD 2026-11-12a  -  read-only, after P6A_MEASURES_TE2.csx build 12a (+ Ctrl+S)
+// P6A_K3Y_CHECK.dax  -  BUILD 2026-11-12b  -  read-only, after P6A_MEASURES_TE2.csx build 12b (+ Ctrl+S)
 // K3 split card, CPY side. DAX query view > paste > Run. Note the time in ms (K3 is one of the heavier visuals).
-// Y1: card texts (CPH side and CPY side, facts and CORTEX). Y2: the tooltip rows (CPYs at 80 % or more).
+// Y1: card texts (now "at 80 %+ incl. over / over", so one breach reads 1 / 1). Y2: tooltip rows (any limit). Y3: movers.
 // =====================================================================================
 DEFINE
     VAR _kScope = TREATAS ( { "Hedge fund" }, DIM_COUNTERPARTY[HF Scope] )
@@ -18,11 +18,19 @@ EVALUATE
                 "CPY", [P6 K3Y Text], "CPYDetail", [P6 K3Y Detail], "CPYColour", [P6 K3Y Colour] ),
             _kScope, TREATAS ( { "CORTEX" }, 'P1 Source'[Source] ) ) )
 
-// ---- Y2 tooltip rows (default source) -------------------------------------------------------------------------------
+// ---- Y2 tooltip rows: CPYs at 80 %+ of any limit (expect the CPY at 116 % of 16A on 9 Nov, plus any 06 / 17A / 17B) --
 EVALUATE
     FILTER (
         SUMMARIZECOLUMNS ( DIM_COUNTERPARTY[CPY Label], DIM_COUNTERPARTY[CPH_Label], _kScope,
-            "Status", [P6 K3Y Status], "Since", [P6 K3Y Since], "Util%", [P6 16A Util %],
-            "UtilVsLimit", [P6 K3Y Util vs Limit], "Structure", [P6 K3Y Structure], "Flag", [P6 K3Y Flag] ),
+            "Breach", [P6 Lim Breach List], "Near", [P6 Lim Near List], "Worst", [P6 Lim Worst],
+            "Amounts", [P6 Lim Worst Amounts], "vsCmp", [P6 Lim vs Cmp], "Structure16A", [P6 K3Y Structure],
+            "Max", [P6 Lim Max %], "Flag", [P6 Lim Flag] ),
         [Flag] = 1 )
-    ORDER BY [Util%] DESC
+    ORDER BY [Max] DESC
+
+// ---- Y3 movers column + CPH colour (CPHs with a breach or 80 %+ on any limit) ------------------------------------------
+EVALUATE
+    FILTER (
+        SUMMARIZECOLUMNS ( DIM_COUNTERPARTY[CPH_Label], _kScope,
+            "Breach", [P6 Lim Breach List], "Near", [P6 Lim Near List], "Colour", [P6 Lim Colour] ),
+        NOT ISBLANK ( [Colour] ) )
