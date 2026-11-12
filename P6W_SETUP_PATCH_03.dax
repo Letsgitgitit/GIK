@@ -1,37 +1,68 @@
 // =====================================================================================
-// P6W_SETUP_PATCH_03.dax  -  BUILD 2026-11-07a  -  four small tables for the top-row activity cards X1 / X2
-// Run BEFORE P6A_MEASURES_TE2.csx build 07a (the script stops if any is missing).
-// HOW: Modeling ▸ New table ▸ paste one block ▸ Enter; repeat. Then for each: the label column ▸ Sort by column ▸ Order;
-//      hide Order (and Weeks). No relationship to anything (delete any line Desktop draws).
+// P6B_16A_BRIDGE_CHECK.dax  -  BUILD 2026-11-12a  -  read-only, DAX query view
+// Question: can our facts reproduce a market-risk explanation of a 16A spike (repo MtM vs collateral)?
+// Test case: one fund, COB 4 Nov -> 11 Nov 2026. Market risk quoted: MtM -119m -> -65m (in our favour), collateral posted
+// by us 93m -> 90m, repo notional 4.9bn -> 4.9bn, reverse repo notional 10.4bn -> 10.6bn.
+// Set _ids below (the fund's Ricos, 10 digits; add the other entities under the same GMRA if any) and run.
+// If a column does not exist (light ALLREPO gold), comment that line out (select > Ctrl+/) and flag it.
+// B1 = 16A per file day (util, limit, MtM columns) ; B2 = ALLREPO per file day and side ; B3 = trades new / gone.
 // =====================================================================================
+DEFINE
+    VAR _ids = { "0000000000" }                 // <- replace with the fund's Ricos
+    VAR _d0 = DATE ( 2026, 11, 1 )
+    VAR _d1 = DATE ( 2026, 11, 12 )
 
-P6W Activity Product =
--- X1 product slicer. Code = the tile text; Product = the value the measures read. All = Rates + FX + Credit + Repo + Rev repo.
-DATATABLE (
-    "Code", STRING, "Product", STRING, "Order", INTEGER,
-    { { "All", "All", 1 }, { "Rt", "Rates", 2 }, { "Rp", "Repo", 3 }, { "RR", "Rev repo", 4 }, { "FX", "FX", 5 }, { "Cr", "Credit", 6 } }
-)
+// ---- B1 16A per file: utilisation, limit and the two MtM columns (once per authorisation, as the P1 measures) -------
+EVALUATE
+    VAR _days = CALCULATETABLE ( VALUES ( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS (),
+        FACT_LIMIT_16A[SnapshotDate] >= _d0, FACT_LIMIT_16A[SnapshotDate] <= _d1 )
+    RETURN
+        ADDCOLUMNS ( _days,
+            "Util_m", VAR d = FACT_LIMIT_16A[SnapshotDate] RETURN CALCULATE (
+                SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[Utilisation] ) ) ),
+                REMOVEFILTERS (), TREATAS ( _ids, FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[SnapshotDate] = d,
+                FACT_LIMIT_16A[StructureType] <> "No authorisation" ) / 1E6,
+            "Limit_m", VAR d = FACT_LIMIT_16A[SnapshotDate] RETURN CALCULATE (
+                SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[Amount] ) ) ),
+                REMOVEFILTERS (), TREATAS ( _ids, FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[SnapshotDate] = d,
+                FACT_LIMIT_16A[StructureType] <> "No authorisation" ) / 1E6,
+            "MtM_m", VAR d = FACT_LIMIT_16A[SnapshotDate] RETURN CALCULATE (
+                SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[MtM] ) ) ),
+                REMOVEFILTERS (), TREATAS ( _ids, FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[SnapshotDate] = d ) / 1E6,
+            "MtM_BO_m", VAR d = FACT_LIMIT_16A[SnapshotDate] RETURN CALCULATE (
+                SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[MtM_BO_EUR] ) ) ),
+                REMOVEFILTERS (), TREATAS ( _ids, FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[SnapshotDate] = d ) / 1E6 )
+    ORDER BY FACT_LIMIT_16A[SnapshotDate]
 
-P6W Activity Window =
--- X1 / X2 window: last 1, 2, 4 or 8 weeks (default 1), compared with the average same-length block of the 12 weeks before.
-DATATABLE (
-    "Label", STRING, "Weeks", INTEGER, "Order", INTEGER,
-    { { "1", 1, 1 }, { "2", 2, 2 }, { "4", 4, 3 }, { "8", 8, 4 } }
-)
+// ---- B2 ALLREPO per file and side (B = repo 17A, S = reverse repo 17B), repo rows, Sponsored excluded --------------------
+EVALUATE
+    CALCULATETABLE (
+        SUMMARIZECOLUMNS ( FACT_ALLREPO[SnapshotDate], FACT_ALLREPO[BuySell],
+            "Trades", DISTINCTCOUNT ( FACT_ALLREPO[CCCTradeKey] ),
+            "Face_bn", SUM ( FACT_ALLREPO[NotionalBond_EUR] ) / 1E9,
+            "Cash_bn", SUM ( FACT_ALLREPO[CashAmount_EUR] ) / 1E9,          // comment out if not in the light gold
+            "RiskNet_m", SUM ( FACT_ALLREPO[RiskNet_EUR] ) / 1E6,
+            "RiskGross_m", SUM ( FACT_ALLREPO[RiskBrutter_EUR] ) / 1E6,     // comment out if not in the light gold
+            "HaircutWtd", DIVIDE ( SUMX ( FACT_ALLREPO, FACT_ALLREPO[NotionalBond_EUR] * FACT_ALLREPO[HaircutValue] ),
+                SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ) ),
+        REMOVEFILTERS (), TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ),
+        FACT_ALLREPO[SnapshotDate] >= _d0, FACT_ALLREPO[SnapshotDate] <= _d1, FACT_ALLREPO[SLA_CateCode] = "07L",
+        FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) ) )
+    ORDER BY FACT_ALLREPO[SnapshotDate], FACT_ALLREPO[BuySell]
 
-P6W X2 Product =
--- X2 matrix columns.
-DATATABLE (
-    "Product", STRING, "Order", INTEGER,
-    { { "FX", 1 }, { "Rates", 2 }, { "Credit", 3 }, { "Rev repo", 4 } }
-)
-
-P6W X2 Row =
--- X2 matrix rows.
-DATATABLE (
-    "Row", STRING, "Order", INTEGER,
-    { { "notional", 1 }, { "deals", 2 }, { "tenor / norm", 3 } }
-)
-
-// Sort: P6W Activity Product[Code] by Order · P6W Activity Window[Label] by Order · P6W X2 Product[Product] by Order ·
-//       P6W X2 Row[Row] by Order.
+// ---- B3 trade turnover between the first and the last ALLREPO file of the window: new, gone, kept (face, €bn) ----------
+EVALUATE
+    VAR _f0 = CALCULATE ( MIN ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] >= _d0 )
+    VAR _f1 = CALCULATE ( MAX ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] <= _d1 )
+    VAR _k0 = CALCULATETABLE ( VALUES ( FACT_ALLREPO[CCCTradeKey] ), REMOVEFILTERS (), TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ),
+        FACT_ALLREPO[SnapshotDate] = _f0, FACT_ALLREPO[SLA_CateCode] = "07L" )
+    VAR _k1 = CALCULATETABLE ( VALUES ( FACT_ALLREPO[CCCTradeKey] ), REMOVEFILTERS (), TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ),
+        FACT_ALLREPO[SnapshotDate] = _f1, FACT_ALLREPO[SLA_CateCode] = "07L" )
+    RETURN
+        ROW ( "From", _f0, "To", _f1,
+            "New_trades", COUNTROWS ( EXCEPT ( _k1, _k0 ) ), "Gone_trades", COUNTROWS ( EXCEPT ( _k0, _k1 ) ),
+            "Kept_trades", COUNTROWS ( INTERSECT ( _k0, _k1 ) ),
+            "New_face_bn", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _f1,
+                TREATAS ( EXCEPT ( _k1, _k0 ), FACT_ALLREPO[CCCTradeKey] ), TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ) ) / 1E9,
+            "Gone_face_bn", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _f0,
+                TREATAS ( EXCEPT ( _k0, _k1 ), FACT_ALLREPO[CCCTradeKey] ), TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ) ) / 1E9 )
