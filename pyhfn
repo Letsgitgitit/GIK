@@ -1,0 +1,19 @@
+import argparse
+import datetime as dt
+import glob
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+
+# =============================================================== CONFIG (edit these)
+# One entry per report family. Region is read from the file ("... Counterparties - <desk>"); "region" here is the
+# fallback when the label is missing. cph_rows: True when the report has CPH header rows above the funds.
+SOURCES = [
+    {"region": "<desk of the HFDB files>", "dir": r"<NAV folder with the HFDB Reporting files>",
+     "glob": "HFDB Reporting - *.xls*", "sheet": "Main Report", "cph_rows": True},
+    {"region": "London", "dir": r"<folder with the London files>",
+     "glob": "<London file pattern, e.g. Hedge Fund Monitoring - *.xls*>", "sheet": "", "cph_rows": False},
+]
