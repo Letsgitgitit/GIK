@@ -1,99 +1,28 @@
 // =====================================================================================
-// P6A_X_CHECK.dax  -  BUILD 2026-11-07a  -  read-only, after P6W_SETUP_PATCH_03 + measures build 07a.
-// X1 / X2 activity cards and the K4 tooltip trend. One tab per EVALUATE. Note the run time of X1 and X2 (DAX Studio
-// Server Timings): the activity measures scan Sales and ALLREPO several times; > 2 s per visual = flag it.
-//   XC0  P6 measures in error (expect none)
-//   XC1  data behind the cards: last sales date, window end, Sales / ALLREPO coverage of the fields used
-//   XC2  X1 for every product × window (what the card shows after each click), HF scope, facts
-//   XC3  X2 matrix (FX, Rates, Credit, Rev repo × notional / deals / tenor), 1 week
-//   XC4  repo source check: ALLREPO new trades by TradeDate vs Sales GRI FIXED INCOME deals, last 12 weeks, HF scope
-//   XC5  K4 tooltip: 17A / 17B used % on the last 10 days
+// P6A_K3Y_CHECK.dax  -  BUILD 2026-11-12a  -  read-only, after P6A_MEASURES_TE2.csx build 12a (+ Ctrl+S)
+// K3 split card, CPY side. DAX query view > paste > Run. Note the time in ms (K3 is one of the heavier visuals).
+// Y1: card texts (CPH side and CPY side, facts and CORTEX). Y2: the tooltip rows (CPYs at 80 % or more).
 // =====================================================================================
-
 DEFINE
     VAR _kScope = TREATAS ( { "Hedge fund" }, DIM_COUNTERPARTY[HF Scope] )
 
+// ---- Y1 card texts. Expect CPH "0 / 0 of 44 CPHs" on 4 Nov (MEASURES_CHECK C2); CPY side ≥ CPH side ----------------
 EVALUATE
-    SELECTCOLUMNS ( FILTER ( INFO.MEASURES (), LEFT ( [Name], 3 ) = "P6 " && [State] <> 1 ),
-        "Measure", [Name], "Error", [ErrorMessage] )
+    UNION (
+        CALCULATETABLE (
+            ROW ( "Source", [P6 16A Source], "CPH", [P6 K3 Text], "CPHDetail", [P6 K3 Detail],
+                "CPY", [P6 K3Y Text], "CPYDetail", [P6 K3Y Detail], "CPYColour", [P6 K3Y Colour] ),
+            _kScope, TREATAS ( { "Facts" }, 'P1 Source'[Source] ) ),
+        CALCULATETABLE (
+            ROW ( "Source", [P6 16A Source], "CPH", [P6 K3 Text], "CPHDetail", [P6 K3 Detail],
+                "CPY", [P6 K3Y Text], "CPYDetail", [P6 K3Y Detail], "CPYColour", [P6 K3Y Colour] ),
+            _kScope, TREATAS ( { "CORTEX" }, 'P1 Source'[Source] ) ) )
 
+// ---- Y2 tooltip rows (default source) -------------------------------------------------------------------------------
 EVALUATE
-    VAR _e = [P6 X End]
-    RETURN
-        ROW (
-            "AsOf", [P6 AsOf], "LastSalesDeal", CALCULATE ( MAX ( FACT_SALES[DealDate] ), REMOVEFILTERS () ), "WindowEnd", _e,
-            "AllrepoTradeDateBlank", CALCULATE ( COUNTROWS ( FACT_ALLREPO ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _e, ISBLANK ( FACT_ALLREPO[TradeDate] ) ) + 0,
-            "AllrepoTxnBlank", CALCULATE ( COUNTROWS ( FACT_ALLREPO ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _e, ISBLANK ( FACT_ALLREPO[TransactionId] ) ) + 0,
-            "AllrepoMatBlank", CALCULATE ( COUNTROWS ( FACT_ALLREPO ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _e, ISBLANK ( FACT_ALLREPO[MaturityDate] ) ) + 0,
-            "SalesMatBlank_12w", CALCULATE ( COUNTROWS ( FACT_SALES ), REMOVEFILTERS (), FACT_SALES[DealDate] > _e - 84, FACT_SALES[DealDate] <= _e, ISBLANK ( FACT_SALES[MaturityDate] ) ) + 0,
-            "SalesRows_12w", CALCULATE ( COUNTROWS ( FACT_SALES ), REMOVEFILTERS (), FACT_SALES[DealDate] > _e - 84, FACT_SALES[DealDate] <= _e ) )
-
-EVALUATE
-    CALCULATETABLE (
-        ADDCOLUMNS (
-            CROSSJOIN ( VALUES ( 'P6W Activity Product'[Product] ), VALUES ( 'P6W Activity Window'[Weeks] ) ),
-            "Notional", [P6 X Notional], "Deals", [P6 X Deals], "NotionalBase", [P6 X Notional Base], "DealsBase", [P6 X Deals Base],
-            "NotionalΔ", [P6 X Notional Δ], "DealsΔ", [P6 X Deals Δ], "Tenor", [P6 X Tenor], "TenorNorm", [P6 X Tenor Norm],
-            "Line1", [P6 X1 Line 1] ),
-        _kScope )
-    ORDER BY 'P6W Activity Product'[Product], 'P6W Activity Window'[Weeks]
-
-EVALUATE
-    SUMMARIZECOLUMNS ( 'P6W X2 Row'[Row], 'P6W X2 Product'[Product], _kScope, TREATAS ( { 1 }, 'P6W Activity Window'[Weeks] ),
-        "Cell", [P6 X2 Cell], "Colour", [P6 X2 Cell Colour] )
-
-EVALUATE
-    VAR _e = [P6 X End]
-    VAR _sc = CALCULATETABLE ( VALUES ( DIM_COUNTERPARTY[HeadOfficeSirisId] ), REMOVEFILTERS (), DIM_COUNTERPARTY[HF Scope] = "Hedge fund" )
-    VAR _wk = ADDCOLUMNS ( GENERATESERIES ( 0, 11, 1 ), "@end", _e - 7 * [Value] )
-    RETURN
-        ADDCOLUMNS ( _wk,
-            "Allrepo_S_trades", VAR _we = [@end] VAR _ws = _we - 7 VAR _sx = _we + 5
-                RETURN CALCULATE ( DISTINCTCOUNT ( FACT_ALLREPO[TransactionId] ), REMOVEFILTERS (), TREATAS ( _sc, FACT_ALLREPO[HeadOfficeSirisId] ),
-                    FACT_ALLREPO[SLA_CateCode] = "07L", FACT_ALLREPO[BuySell] = "S", FACT_ALLREPO[TradeDate] > _ws, FACT_ALLREPO[TradeDate] <= _we,
-                    FACT_ALLREPO[SnapshotDate] > _ws, FACT_ALLREPO[SnapshotDate] <= _sx,
-                    KEEPFILTERS ( FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) ) ) ),
-            "Allrepo_B_trades", VAR _we = [@end] VAR _ws = _we - 7 VAR _sx = _we + 5
-                RETURN CALCULATE ( DISTINCTCOUNT ( FACT_ALLREPO[TransactionId] ), REMOVEFILTERS (), TREATAS ( _sc, FACT_ALLREPO[HeadOfficeSirisId] ),
-                    FACT_ALLREPO[SLA_CateCode] = "07L", FACT_ALLREPO[BuySell] = "B", FACT_ALLREPO[TradeDate] > _ws, FACT_ALLREPO[TradeDate] <= _we,
-                    FACT_ALLREPO[SnapshotDate] > _ws, FACT_ALLREPO[SnapshotDate] <= _sx,
-                    KEEPFILTERS ( FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) ) ) ),
-            "Sales_GRIFI_deals", VAR _we = [@end] VAR _ws = _we - 7
-                RETURN CALCULATE ( COUNTROWS ( FACT_SALES ), REMOVEFILTERS (), TREATAS ( _sc, FACT_SALES[RicosCode] ),
-                    FACT_SALES[ProductLineGroupName] = "GRI FIXED INCOME", FACT_SALES[DealDate] > _ws, FACT_SALES[DealDate] <= _we, FACT_SALES[IsRebooked] = FALSE () ),
-            "Sales_GRIFI_notional", VAR _we = [@end] VAR _ws = _we - 7
-                RETURN CALCULATE ( SUMX ( FACT_SALES, ABS ( FACT_SALES[NominalAmountEUR] ) ), REMOVEFILTERS (), TREATAS ( _sc, FACT_SALES[RicosCode] ),
-                    FACT_SALES[ProductLineGroupName] = "GRI FIXED INCOME", FACT_SALES[DealDate] > _ws, FACT_SALES[DealDate] <= _we, FACT_SALES[IsRebooked] = FALSE () ),
-            "Sales_GRIFI_tiny_notional", VAR _we = [@end] VAR _ws = _we - 7
-                RETURN CALCULATE ( COUNTROWS ( FACT_SALES ), REMOVEFILTERS (), TREATAS ( _sc, FACT_SALES[RicosCode] ),
-                    FACT_SALES[ProductLineGroupName] = "GRI FIXED INCOME", FACT_SALES[DealDate] > _ws, FACT_SALES[DealDate] <= _we,
-                    FACT_SALES[IsRebooked] = FALSE (), FACT_SALES[NominalAmountEUR] < 1000, FACT_SALES[NominalAmountEUR] > -1000 ) + 0 )
-    ORDER BY [Value]
-
-EVALUATE
-    VAR _l = [P6 Latest]
-    VAR _d = CALCULATETABLE ( VALUES ( DIM_DATE[Date] ), DIM_DATE[Date] > _l - 10, DIM_DATE[Date] <= _l )
-    RETURN SUMMARIZECOLUMNS ( DIM_DATE[Date], _d, _kScope, "17A_used", [P6 K4T 17A Used %], "17B_used", [P6 K4T 17B Used %] )
-    ORDER BY DIM_DATE[Date]
-
-
-
-
-
-
-EVALUATE
-VAR d = CALCULATE ( MAX ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS () )
-RETURN
-TOPN ( 40,
-    CALCULATETABLE (
-        ADDCOLUMNS (
-            SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[IssuerName], FACT_ALLREPO[PublicSector_ssj],
-                FACT_ALLREPO[Country_ssj], FACT_ALLREPO[Category_ssj], FACT_ALLREPO[Sector_ssj],
-                FACT_ALLREPO[EconomicSector_ssj] ),
-            "Face_bn", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ) / 1E9,
-            "Issuers", CALCULATE ( DISTINCTCOUNT ( FACT_ALLREPO[IssuerId] ) ) ),
-        REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = d, FACT_ALLREPO[SLA_CateCode] = "07L",
-        FACT_ALLREPO[BuySell] = "S", DIM_COUNTERPARTY[HF Scope] = "Hedge fund",
-        KEEPFILTERS ( FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) ) ) ),
-    [Face_bn], DESC )
-ORDER BY [Face_bn] DESC
+    FILTER (
+        SUMMARIZECOLUMNS ( DIM_COUNTERPARTY[CPY Label], DIM_COUNTERPARTY[CPH_Label], _kScope,
+            "Status", [P6 K3Y Status], "Since", [P6 K3Y Since], "Util%", [P6 16A Util %],
+            "UtilVsLimit", [P6 K3Y Util vs Limit], "Structure", [P6 K3Y Structure], "Flag", [P6 K3Y Flag] ),
+        [Flag] = 1 )
+    ORDER BY [Util%] DESC
