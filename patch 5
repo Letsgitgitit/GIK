@@ -1,116 +1,42 @@
 // =====================================================================================
-// P6A_PAPER_RATING_CHECK.dax  -  BUILD 2026-11-10a  -  read-only (DAX query view > paste > Run)
-// Question: can FACT_SALES paper fields (S&P / Moody's / industry / country) rate and classify the collateral that hedge
-// funds give us in reverse repo (FACT_ALLREPO, 17B side, latest file), matched on ISIN?
-// NB the Sales headers are "Paper Issuer S&P Rating" / "Paper Issuer Moodys Rating": ISSUER ratings from the agencies,
-// not the rating of each bond. Same as the bond for govies / agencies / senior debt; can differ for covered or sub debt.
-// Scope: HF Scope = "Hedge fund", 07L, BuySell "S" (17B, as in the P6 measures), Sponsored excluded. The A3b envelope
-// exclusion is NOT applied here (check only), so totals sit slightly above R1.
-// Column names assumed: FACT_ALLREPO[CodesinSJ] (ISIN); FACT_SALES[ISINCode], [PaperSPRating], [PaperMoodysRating],
-// [PaperIssuerIndustry], [PaperIssuerCountry]. If one errors, replace it with the name in your Data pane and flag it.
-// 5 result tabs:
-//   RC1 coverage: face with an ISIN, found in Sales, with an S&P / Moody's rating
-//   RC2 internal rating (Rating_ssj) x agency grade (S&P first, Moody's if no S&P), face  -> reconciliation
-//   RC3 our issuer group (P6W Issuer Map) x Sales industry, face  -> can Sales classify the "Unclassified" collateral
-//   RC4 the 25 largest ISINs with no agency rating
-//   RC5 ISINs with more than one rating / industry combination in Sales (rating changes or data noise)
+// P6W_SETUP_PATCH_04.dax  -  BUILD 2026-11-12a  -  R collateral buckets labelled in external-rating terms (Will 9 Nov)
+// Replaces the calculated table P6W Rating Map. Same Bucket Order numbers (1-6, 9) and the same Low Grade flag, so no
+// measure changes; only the legend text. New column [Internal] lists the internal grades in each bucket (tooltips).
+// Mapping internal A+/A ≈ AAA-AA · B+/B ≈ A · C+/C/C- ≈ BBB · D+/D ≈ BB · D- and below ≈ B and lower — checked 11 Nov
+// against S&P / Moody's on the rated part of HF collateral (P6A_PAPER_RATING_CHECK RC2): A+ = AAA/AA, B+ = AA/A, C+ = BBB.
+// CHECK it worked: R1 / R2 legend reads AAA–AA, A, BBB, BB, B & below, No bond detail (not A, B, C, D, D- and below).
+// HOW: Data pane ▸ P6W Rating Map ▸ formula bar ▸ Ctrl+A ▸ paste ▸ Enter. Then [Bucket] ▸ Sort by column ▸ Bucket Order;
+//      hide Rating_ssj, Bucket Order, Low Grade, Internal. In R1 / R2 re-pick the legend colours (labels changed).
 // =====================================================================================
-DEFINE
-    VAR _d = CALCULATE ( MAX ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS () )
-    VAR _sc =
-        CALCULATETABLE ( VALUES ( DIM_COUNTERPARTY[HeadOfficeSirisId] ), REMOVEFILTERS (),
-            DIM_COUNTERPARTY[HF Scope] = "Hedge fund" )
-    VAR _coll0 =
-        CALCULATETABLE (
-            ADDCOLUMNS (
-                SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[CodesinSJ], FACT_ALLREPO[IssuerId], FACT_ALLREPO[IssuerName],
-                    FACT_ALLREPO[Rating_ssj] ),
-                "@face", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ) ),
-            REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L",
-            FACT_ALLREPO[BuySell] = "S",
-            FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) ),
-            TREATAS ( _sc, FACT_ALLREPO[HeadOfficeSirisId] ) )
-    VAR _coll =
-        SELECTCOLUMNS ( _coll0,
-            "ISIN", TRIM ( FACT_ALLREPO[CodesinSJ] & "" ), "IssuerId", FACT_ALLREPO[IssuerId],
-            "Issuer", FACT_ALLREPO[IssuerName], "Internal", FACT_ALLREPO[Rating_ssj], "Face", [@face] )
-    VAR _isins = DISTINCT ( SELECTCOLUMNS ( FILTER ( _coll, [ISIN] <> "" ), "i", [ISIN] ) )
-    VAR _s0 =
-        CALCULATETABLE (
-            SUMMARIZE ( FACT_SALES, FACT_SALES[ISINCode], FACT_SALES[PaperSPRating], FACT_SALES[PaperMoodysRating],
-                FACT_SALES[PaperIssuerIndustry], FACT_SALES[PaperIssuerCountry] ),
-            REMOVEFILTERS (), TREATAS ( _isins, FACT_SALES[ISINCode] ) )
-    VAR _s1 =
-        GROUPBY ( _s0, FACT_SALES[ISINCode],
-            "SP", MAXX ( CURRENTGROUP (),
-                IF ( TRIM ( FACT_SALES[PaperSPRating] & "" ) IN { "", "NR", "N.R.", "WR", "#" }, BLANK (), TRIM ( FACT_SALES[PaperSPRating] & "" ) ) ),
-            "Moodys", MAXX ( CURRENTGROUP (),
-                IF ( TRIM ( FACT_SALES[PaperMoodysRating] & "" ) IN { "", "NR", "N.R.", "WR", "#" }, BLANK (), TRIM ( FACT_SALES[PaperMoodysRating] & "" ) ) ),
-            "Industry", MAXX ( CURRENTGROUP (), FACT_SALES[PaperIssuerIndustry] ),
-            "SCountry", MAXX ( CURRENTGROUP (), FACT_SALES[PaperIssuerCountry] ),
-            "Variants", SUMX ( CURRENTGROUP (), 1 ) )
-    VAR _s =
-        SELECTCOLUMNS ( _s1, "sISIN", FACT_SALES[ISINCode], "sSP", [SP], "sMoodys", [Moodys],
-            "sIndustry", [Industry], "sCountry", [SCountry], "sVariants", [Variants] )
-    VAR _j =
-        ADDCOLUMNS ( _coll,
-            "InSales", VAR i = [ISIN] RETURN i <> "" && NOT ISEMPTY ( FILTER ( _s, [sISIN] = i ) ),
-            "SP", VAR i = [ISIN] RETURN MAXX ( FILTER ( _s, [sISIN] = i ), [sSP] ),
-            "Moodys", VAR i = [ISIN] RETURN MAXX ( FILTER ( _s, [sISIN] = i ), [sMoodys] ),
-            "Industry", VAR i = [ISIN] RETURN MAXX ( FILTER ( _s, [sISIN] = i ), [sIndustry] ),
-            "Group", LOOKUPVALUE ( 'P6W Issuer Map'[Group], 'P6W Issuer Map'[IssuerId], [IssuerId] ) )
-    VAR _g =
-        ADDCOLUMNS ( _j,
-            "SPGrade",
-                VAR r = UPPER ( [SP] & "" )
-                RETURN SWITCH ( TRUE (), r = "", "(none)",
-                    LEFT ( r, 3 ) = "AAA", "1 AAA", LEFT ( r, 2 ) = "AA", "2 AA", LEFT ( r, 3 ) = "BBB", "4 BBB",
-                    LEFT ( r, 2 ) = "BB", "5 BB", LEFT ( r, 1 ) = "A", "3 A", LEFT ( r, 1 ) = "B", "6 B",
-                    LEFT ( r, 1 ) IN { "C", "D" }, "7 CCC & below", "(none)" ),
-            "MGrade",
-                VAR r = UPPER ( [Moodys] & "" )
-                RETURN SWITCH ( TRUE (), r = "", "(none)",
-                    LEFT ( r, 3 ) = "AAA", "1 AAA", LEFT ( r, 2 ) = "AA", "2 AA", LEFT ( r, 3 ) = "BAA", "4 BBB",
-                    LEFT ( r, 2 ) = "BA", "5 BB", LEFT ( r, 1 ) = "A", "3 A", LEFT ( r, 1 ) = "B", "6 B",
-                    LEFT ( r, 1 ) = "C", "7 CCC & below", "(none)" ) )
-    VAR _h =
-        ADDCOLUMNS ( _g,
-            "Agency", IF ( [SPGrade] <> "(none)", [SPGrade], [MGrade] ),
-            "AgencySource", IF ( [SPGrade] <> "(none)", "S&P", IF ( [MGrade] <> "(none)", "Moody's", "none" ) ) )
 
-// ---- RC1 coverage (EUR face) ----------------------------------------------------------------------------------------
-EVALUATE
-    ROW ( "AsOf", _d,
-        "Face", SUMX ( _h, [Face] ),
-        "Face_withISIN", SUMX ( FILTER ( _h, [ISIN] <> "" ), [Face] ),
-        "Face_inSales", SUMX ( FILTER ( _h, [InSales] ), [Face] ),
-        "Face_SP", SUMX ( FILTER ( _h, [SPGrade] <> "(none)" ), [Face] ),
-        "Face_Moodys", SUMX ( FILTER ( _h, [MGrade] <> "(none)" ), [Face] ),
-        "Face_either", SUMX ( FILTER ( _h, [AgencySource] <> "none" ), [Face] ),
-        "ISINs", COUNTROWS ( _isins ), "ISINs_inSales", COUNTROWS ( _s ),
-        "SP_vs_Moodys_differ", SUMX ( FILTER ( _h, [SPGrade] <> "(none)" && [MGrade] <> "(none)" && [SPGrade] <> [MGrade] ), [Face] ) )
-
-// ---- RC2 internal x agency grade ------------------------------------------------------------------------------------
-EVALUATE
-    GROUPBY ( _h, [Internal], [Agency], "Face", SUMX ( CURRENTGROUP (), [Face] ), "Lines", SUMX ( CURRENTGROUP (), 1 ) )
-    ORDER BY [Internal], [Agency]
-
-// ---- RC3 our issuer group x Sales industry (top 40 by face) -------------------------------------------------------
-EVALUATE
-    TOPN ( 40,
-        GROUPBY ( _h, [Group], [Industry], "Face", SUMX ( CURRENTGROUP (), [Face] ) ),
-        [Face], DESC )
-    ORDER BY [Face] DESC
-
-// ---- RC4 the 25 largest ISINs with no agency rating -----------------------------------------------------------------
-EVALUATE
-    TOPN ( 25,
-        SELECTCOLUMNS ( FILTER ( _h, [AgencySource] = "none" ),
-            "ISIN", [ISIN], "Issuer", [Issuer], "Internal", [Internal], "Group", [Group], "InSales", [InSales], "Face", [Face] ),
-        [Face], DESC )
-    ORDER BY [Face] DESC
-
-// ---- RC5 ISINs with several rating / industry combinations in Sales ------------------------------------------------
-EVALUATE
-    TOPN ( 20, FILTER ( _s, [sVariants] > 1 ), [sVariants], DESC )
-    ORDER BY [sVariants] DESC
+P6W Rating Map =
+VAR rm_vals = CALCULATETABLE ( DISTINCT ( FACT_ALLREPO[Rating_ssj] ), REMOVEFILTERS () )
+VAR rm_tagged =
+    ADDCOLUMNS (
+        SELECTCOLUMNS ( rm_vals, "Rating_ssj", FACT_ALLREPO[Rating_ssj] ),
+        "@r", UPPER ( TRIM ( [Rating_ssj] ) )
+    )
+VAR rm_b =
+    ADDCOLUMNS (
+        rm_tagged,
+        "@b",
+            SWITCH (
+                TRUE (),
+                ISBLANK ( [Rating_ssj] ) || [@r] = "" || CONTAINSSTRING ( [@r], "NOT IDENTIFIED" ), 6,
+                LEFT ( [@r], 1 ) = "A", 1,
+                LEFT ( [@r], 1 ) = "B", 2,
+                LEFT ( [@r], 1 ) = "C", 3,
+                [@r] IN { "D+", "D" }, 4,
+                [@r] = "D-" || LEFT ( [@r], 1 ) IN { "E", "F", "Z" }, 5,
+                9
+            )
+    )
+RETURN
+    SELECTCOLUMNS (
+        rm_b,
+        "Rating_ssj", [Rating_ssj],
+        "Bucket", SWITCH ( [@b], 1, "AAA–AA", 2, "A", 3, "BBB", 4, "BB", 5, "B & below", 6, "No bond detail", "Unmapped" ),
+        "Bucket Order", [@b],
+        "Low Grade", IF ( [@b] = 5, 1, 0 ),
+        "Internal", SWITCH ( [@b], 1, "A+ A", 2, "B+ B", 3, "C+ C C-", 4, "D+ D", 5, "D- E F Z", 6, "blank / not identified", "other" )
+    )
