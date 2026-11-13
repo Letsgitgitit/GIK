@@ -1,36 +1,52 @@
 // =====================================================================================
-// P6A_K3Y_CHECK.dax  -  BUILD 2026-11-12b  -  read-only, after P6A_MEASURES_TE2.csx build 12b (+ Ctrl+S)
-// K3 split card, CPY side. DAX query view > paste > Run. Note the time in ms (K3 is one of the heavier visuals).
-// Y1: card texts (now "at 80 %+ incl. over / over", so one breach reads 1 / 1). Y2: tooltip rows (any limit). Y3: movers.
+// PX_CHECK.dax  -  BUILD 2026-11-12b  -  read-only, after P6W_SETUP_PATCH_07 + P6A_MEASURES_TE2.csx 12f (+ Ctrl+S)
+// Reproduces the 6 -> 11 Nov case with the PX measures. Set _ids (same Ricos as the bridge checks). Note the ms.
+// Expected (bridge checks, €m): util 48.5 -> 85.4 ; matured -1.9, new +4.6, reval -2.6, netting +36.5, non-repo +0.3 ;
+// netting benefit -37.9 ; haircut unchanged ; 0 new issuers ; repo MtM now on started trades only (12f): expect closer to the risk note (-65 on 11 Nov);
+// notional 11 Nov: repo 4.9bn, rev. repo 10.6bn, forward-starting 7.2bn ; spot 0.2 -> 25.6 ; collateral est. end ~101.8.
 // =====================================================================================
 DEFINE
-    VAR _kScope = TREATAS ( { "Hedge fund" }, DIM_COUNTERPARTY[HF Scope] )
+    VAR _ids = { "0000000000" }                 // <- the fund's Ricos
+    VAR _ctx = TREATAS ( _ids, DIM_COUNTERPARTY[HeadOfficeSirisId] )
+    VAR _win = TREATAS ( { "Custom" }, 'PX Window'[Window] )
+    VAR _from = TREATAS ( { DATE ( 2026, 11, 6 ) }, 'PX From'[Date] )
+    VAR _to = TREATAS ( { DATE ( 2026, 11, 11 ) }, 'PX To'[Date] )
 
-// ---- Y1 card texts. Expect CPH "0 / 0 of 44 CPHs" on 4 Nov (MEASURES_CHECK C2); CPY side ≥ CPH side ----------------
+// ---- X1 dates, levels, components, cards
 EVALUATE
-    UNION (
-        CALCULATETABLE (
-            ROW ( "Source", [P6 16A Source], "CPH", [P6 K3 Text], "CPHDetail", [P6 K3 Detail],
-                "CPY", [P6 K3Y Text], "CPYDetail", [P6 K3Y Detail], "CPYColour", [P6 K3Y Colour] ),
-            _kScope, TREATAS ( { "Facts" }, 'P1 Source'[Source] ) ),
-        CALCULATETABLE (
-            ROW ( "Source", [P6 16A Source], "CPH", [P6 K3 Text], "CPHDetail", [P6 K3 Detail],
-                "CPY", [P6 K3Y Text], "CPYDetail", [P6 K3Y Detail], "CPYColour", [P6 K3Y Colour] ),
-            _kScope, TREATAS ( { "CORTEX" }, 'P1 Source'[Source] ) ) )
+    CALCULATETABLE (
+        ROW (
+            "D0", [PX D0], "D1", [PX D1], "R0", [PX R0], "R1", [PX R1],
+            "UtilStart_m", [PX Util Start] / 1E6, "UtilEnd_m", [PX Util End] / 1E6,
+            "Matured_m", [PX C Matured] / 1E6, "New_m", [PX C New] / 1E6, "Reval_m", [PX C Reval] / 1E6,
+            "Netting_m", [PX C Netting] / 1E6, "NonRepo_m", [PX C NonRepo] / 1E6,
+            "Netting", [PX A Netting], "NettingDetail", [PX A Netting Detail],
+            "Haircut", [PX A Haircut], "HaircutDetail", [PX A Haircut Detail],
+            "Underlyings", [PX A Underlyings], "UnderlyingsDetail", [PX A Underlyings Detail],
+            "NonRepo", [PX A NonRepo], "Volume", [PX A Volume], "VolumeDetail", [PX A Volume Detail],
+            "RepoNotional_bn", [PX Repo Notional End] / 1E9, "RevRepoNotional_bn", [PX RevRepo Notional End] / 1E9, "FwdNotional_bn", [PX Fwd Notional End] / 1E9,
+            "MtMStart_m", [PX MtM Start] / 1E6, "MtMEnd_m", [PX MtM End] / 1E6,
+            "MtMMatured_m", [PX MtM Matured] / 1E6, "MtMHeld_m", [PX MtM Held] / 1E6, "MtMNew_m", [PX MtM New] / 1E6,
+            "SpotStart_m", [PX Spot Start] / 1E6, "SpotEnd_m", [PX Spot End] / 1E6,
+            "CollatEnd_m", [PX Collat End] / 1E6, "CollatNote", [PX Collat Note],
+            "Title", [PX Title], "Subtitle", [PX Subtitle], "WFTitle", [PX WF Title], "WFSubtitle", [PX WF Subtitle] ),
+        _ctx, _win, _from, _to )
 
-// ---- Y2 tooltip rows: CPYs at 80 %+ of any limit (expect the CPY at 116 % of 16A on 9 Nov, plus any 06 / 17A / 17B) --
+// ---- X2 waterfall rows (Base + Up + Down + Total stack per step)
 EVALUATE
-    FILTER (
-        SUMMARIZECOLUMNS ( DIM_COUNTERPARTY[CPY Label], DIM_COUNTERPARTY[CPH_Label], _kScope,
-            "Breach", [P6 Lim Breach List], "Near", [P6 Lim Near List], "Worst", [P6 Lim Worst],
-            "Amounts", [P6 Lim Worst Amounts], "vsCmp", [P6 Lim vs Cmp], "Structure16A", [P6 K3Y Structure],
-            "Max", [P6 Lim Max %], "Flag", [P6 Lim Flag] ),
-        [Flag] = 1 )
-    ORDER BY [Max] DESC
+    CALCULATETABLE (
+        SUMMARIZECOLUMNS ( 'PX Step'[Order], 'PX Step'[Step],
+            "Base", [PX WF Base] / 1E6, "Up", [PX WF Up] / 1E6, "Down", [PX WF Down] / 1E6, "Total", [PX WF Total] / 1E6,
+            "Label", [PX WF Label] ),
+        _ctx, _win, _from, _to )
+    ORDER BY 'PX Step'[Order]
 
-// ---- Y3 movers column + CPH colour (CPHs with a breach or 80 %+ on any limit) ------------------------------------------
+// ---- X3 daily trend
 EVALUATE
-    FILTER (
-        SUMMARIZECOLUMNS ( DIM_COUNTERPARTY[CPH_Label], _kScope,
-            "Breach", [P6 Lim Breach List], "Near", [P6 Lim Near List], "Colour", [P6 Lim Colour] ),
-        NOT ISBLANK ( [Colour] ) )
+    CALCULATETABLE (
+        FILTER (
+            SUMMARIZECOLUMNS ( DIM_DATE[Date], "Util", [PX T Util] / 1E6, "Limit", [PX T Limit] / 1E6,
+                "Net", [PX T Net] / 1E6, "MtM", [PX T MtM] / 1E6 ),
+            NOT ISBLANK ( [Util] ) || NOT ISBLANK ( [Net] ) ),
+        _ctx, _win, _from, _to )
+    ORDER BY DIM_DATE[Date]
