@@ -1,86 +1,39 @@
 // =====================================================================================
-// P6W_SETUP_PATCH_04.dax  -  BUILD 2026-11-12a  -  R collateral buckets labelled in external-rating terms (Will 9 Nov)
-// Replaces the calculated table P6W Rating Map. Same Bucket Order numbers (1-6, 9) and the same Low Grade flag, so no
-// measure changes; only the legend text. New column [Internal] lists the internal grades in each bucket (tooltips).
-// Mapping internal A+/A ≈ AAA-AA · B+/B ≈ A · C+/C/C- ≈ BBB · D+/D ≈ BB · D- and below ≈ B and lower — checked 11 Nov
-// against S&P / Moody's on the rated part of HF collateral (P6A_PAPER_RATING_CHECK RC2): A+ = AAA/AA, B+ = AA/A, C+ = BBB.
-// CHECK it worked: R1 / R2 legend reads AAA–AA, A, BBB, BB, B & below, No bond detail (not A, B, C, D, D- and below).
-// HOW: Data pane ▸ P6W Rating Map ▸ formula bar ▸ Ctrl+A ▸ paste ▸ Enter. Then [Bucket] ▸ Sort by column ▸ Bucket Order;
-//      hide Rating_ssj, Bucket Order, Low Grade, Internal. In R1 / R2 re-pick the legend colours (labels changed).
+// P6W_SETUP_PATCH_07.dax  -  BUILD 2026-11-12b  -  tables for the "PX 16A move explainer" drill-through page
+// Run BEFORE P6A_MEASURES_TE2.csx build 12e (the script stops if these tables are missing).
+// HOW (each block): Modeling ▸ New table ▸ paste the block (name included) ▸ Enter. No relationships to any of them.
 // =====================================================================================
 
-P6W Rating Map =
-VAR rm_vals = CALCULATETABLE ( DISTINCT ( FACT_ALLREPO[Rating_ssj] ), REMOVEFILTERS () )
-VAR rm_tagged =
-    ADDCOLUMNS (
-        SELECTCOLUMNS ( rm_vals, "Rating_ssj", FACT_ALLREPO[Rating_ssj] ),
-        "@r", UPPER ( TRIM ( [Rating_ssj] ) )
-    )
-VAR rm_b =
-    ADDCOLUMNS (
-        rm_tagged,
-        "@b",
-            SWITCH (
-                TRUE (),
-                ISBLANK ( [Rating_ssj] ) || [@r] = "" || CONTAINSSTRING ( [@r], "NOT IDENTIFIED" ), 6,
-                LEFT ( [@r], 1 ) = "A", 1,
-                LEFT ( [@r], 1 ) = "B", 2,
-                LEFT ( [@r], 1 ) = "C", 3,
-                [@r] IN { "D+", "D" }, 4,
-                [@r] = "D-" || LEFT ( [@r], 1 ) IN { "E", "F", "Z" }, 5,
-                9
-            )
-    )
-RETURN
-    SELECTCOLUMNS (
-        rm_b,
-        "Rating_ssj", [Rating_ssj],
-        "Bucket", SWITCH ( [@b], 1, "AAA–AA", 2, "A", 3, "BBB", 4, "BB", 5, "B & below", 6, "No bond detail", "Unmapped" ),
-        "Bucket Order", [@b],
-        "Low Grade", IF ( [@b] = 5, 1, 0 ),
-        "Internal", SWITCH ( [@b], 1, "A+ A", 2, "B+ B", 3, "C+ C C-", 4, "D+ D", 5, "D- E F Z", 6, "blank / not identified", "other" )
-    )
-
-
-
-
-
-
-
-// =====================================================================================
-// P6W_SETUP_PATCH_06.dax  -  BUILD 2026-11-11a  -  R1 "Compare" row label follows R1a (1M ago … 2Y ago)
-// Run BEFORE P6A_MEASURES_TE2.csx build 11a (the script stops if P6W R Row[Days] is missing).
-// How it works: one compare row per R1a window. P6 R1 Collateral returns blank on the rows that do not match the R1a
-// pick, and a bar chart hides a category with no value, so R1 always shows 2 bars: "As of" + "<window> ago".
-// =====================================================================================
-
-// ---- S1 select the table P6W R Row ▸ replace its formula ▸ Enter
-
-P6W R Row =
+// ---- S1 window buttons. Then: Window ▸ Column tools ▸ Sort by column ▸ Order. Hide Days and Order.
+PX Window =
 DATATABLE (
-    "Row", STRING,
-    "Order", INTEGER,
-    "Days", INTEGER,
+    "Window", STRING, "Days", INTEGER, "Order", INTEGER,
+    { { "1D", 1, 1 }, { "1W", 7, 2 }, { "2W", 14, 3 }, { "1M", 30, 4 }, { "Custom", 0, 5 } }
+)
+
+// ---- S2 custom dates ("From" and "To" pickers, used only when Window = Custom). Weekdays since Jan 2025.
+PX From =
+SELECTCOLUMNS ( FILTER ( CALENDAR ( DATE ( 2025, 1, 1 ), TODAY () ), WEEKDAY ( [Date], 2 ) <= 5 ), "Date", [Date] )
+
+PX To =
+SELECTCOLUMNS ( FILTER ( CALENDAR ( DATE ( 2025, 1, 1 ), TODAY () ), WEEKDAY ( [Date], 2 ) <= 5 ), "Date", [Date] )
+// For both: select the Date column ▸ Column tools ▸ Format ▸ d mmm yyyy.
+
+// ---- S3 waterfall steps (the X axis of the waterfall). Then: Step ▸ Sort by column ▸ Order. Hide Order.
+PX Step =
+DATATABLE (
+    "Step", STRING, "Order", INTEGER,
     {
-        { "As of", 1, 0 },
-        { "1M ago", 2, 30 },
-        { "3M ago", 2, 91 },
-        { "6M ago", 2, 182 },
-        { "1Y ago", 2, 365 },
-        { "2Y ago", 2, 730 }
+        { "16A start", 1 },
+        { "Matured trades", 2 },
+        { "New trades", 3 },
+        { "Revaluation", 4 },
+        { "Netting", 5 },
+        { "Non-repo", 6 },
+        { "16A end", 7 }
     }
 )
 
-// ---- S2 sort and hide
-// P6W R Row[Row] ▸ Sort by column ▸ Order (still valid: each Row has one Order). Hide Order and Days.
-// R1 ▸ Format ▸ Y axis: nothing to change. If an empty compare bar slot appears, R1 ▸ Y-axis field ▸ "Show items with no
-// data" must be OFF (default).
-
-// ---- S3 then: Tabular Editor ▸ run P6A_MEASURES_TE2.csx (build 11a) ▸ Ctrl+S in Power BI.
-
-// ---- S4 check: expect 2 rows, the second labelled with the R1a window ("3M ago" when nothing is picked)
-EVALUATE
-    SUMMARIZECOLUMNS ( 'P6W R Row'[Row], TREATAS ( { "Hedge fund" }, DIM_COUNTERPARTY[HF Scope] ),
-        TREATAS ( { "6M" }, 'P6W R Compare'[Window] ),
-        "Face", [P6 R1 Collateral] )
-// → "As of" ≈ €63bn and "6M ago" only.
+// ---- S4 (12 Nov b) Sponsored switch (FICC / DTCC repo). Default Exclude = the 6 Nov HF rule. Sort Sponsored by Order.
+PX Sponsored =
+DATATABLE ( "Sponsored", STRING, "Order", INTEGER, { { "Exclude", 1 }, { "Include", 2 } } )
