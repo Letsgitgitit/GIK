@@ -37,3 +37,20 @@ DATATABLE (
 // ---- S4 (12 Nov b) Sponsored switch (FICC / DTCC repo). Default Exclude = the 6 Nov HF rule. Sort Sponsored by Order.
 PX Sponsored =
 DATATABLE ( "Sponsored", STRING, "Order", INTEGER, { { "Exclude", 1 }, { "Include", 2 } } )
+
+// ---- S5 (13 Nov) rows of the collateral-check table (PX4). Sort Row by Order; hide Order.
+PX Collat Row =
+DATATABLE (
+    "Row", STRING, "Order", INTEGER,
+    {
+        { "Repo MtM (− = in our favour)", 1 },
+        { "   … matured trades", 2 },
+        { "   … trades held", 3 },
+        { "   … new trades", 4 },
+        { "16A spot exposure", 5 },
+        { "Collateral posted (est.)", 6 },
+        { "Repo notional (started)", 7 },
+        { "Rev. repo notional (started)", 8 },
+        { "Forward-starting (not counted)", 9 }
+    }
+)
