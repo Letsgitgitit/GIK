@@ -40,3 +40,26 @@ EVALUATE
             REMOVEFILTERS (), TREATAS ( _agr, FACT_ALLREPO[CCCCollatContractId] ),
             FACT_ALLREPO[SnapshotDate] = DATE ( 2026, 11, 11 ), FACT_ALLREPO[SLA_CateCode] = "07L" )
     ORDER BY FACT_ALLREPO[CCCCollatContractId], [Cash_bn] DESC
+
+// ---- G3 (added after G1) why our notional is above the risk note's (6.7 / 16.0bn vs 4.9 / 10.6bn on 11 Nov) while MtM
+//      is close: split by forward-starting (StartDate after the file date), maturing within 1 business day, and the rest.
+//      StartDate may not be in the model: if it errors, add it to the ALLREPO query (or comment G3 out).
+EVALUATE
+    VAR _d = DATE ( 2026, 11, 11 )
+    RETURN
+        ADDCOLUMNS (
+            DATATABLE ( "Bucket", STRING, { { "forward-starting" }, { "matures <= next day" }, { "live, other" } } ),
+            "Repo_bn", VAR b = [Bucket] RETURN CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS (),
+                TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L",
+                FACT_ALLREPO[BuySell] = "B", _notSp,
+                FILTER ( ALL ( FACT_ALLREPO[StartDate], FACT_ALLREPO[MaturityDate] ),
+                    SWITCH ( b, "forward-starting", FACT_ALLREPO[StartDate] > _d,
+                        "matures <= next day", FACT_ALLREPO[StartDate] <= _d && FACT_ALLREPO[MaturityDate] <= _d + 3,
+                        FACT_ALLREPO[StartDate] <= _d && FACT_ALLREPO[MaturityDate] > _d + 3 ) ) ) / 1E9,
+            "RevRepo_bn", VAR b = [Bucket] RETURN CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS (),
+                TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L",
+                FACT_ALLREPO[BuySell] = "S", _notSp,
+                FILTER ( ALL ( FACT_ALLREPO[StartDate], FACT_ALLREPO[MaturityDate] ),
+                    SWITCH ( b, "forward-starting", FACT_ALLREPO[StartDate] > _d,
+                        "matures <= next day", FACT_ALLREPO[StartDate] <= _d && FACT_ALLREPO[MaturityDate] <= _d + 3,
+                        FACT_ALLREPO[StartDate] <= _d && FACT_ALLREPO[MaturityDate] > _d + 3 ) ) ) / 1E9 )
