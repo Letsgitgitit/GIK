@@ -1,0 +1,136 @@
+DEFINE
+    VAR _d = CALCULATE ( MAX ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS () )
+    VAR _sp = FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) )
+    VAR _nsp = FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) )
+    // CPYs with at least one sponsored repo line on the latest file
+    VAR _ids = CALCULATETABLE ( VALUES ( FACT_ALLREPO[HeadOfficeSirisId] ), REMOVEFILTERS (),
+        FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L", _sp )
+    // per CPY: ALLREPO with / without sponsored, limit use on the last file <= _d (P1 measures; CORTEX 16A)
+    VAR _t =
+        ADDCOLUMNS (
+            CALCULATETABLE ( VALUES ( DIM_COUNTERPARTY[HeadOfficeSirisId] ), TREATAS ( _ids, DIM_COUNTERPARTY[HeadOfficeSirisId] ) ),
+            "@cashB_sp", CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS ( DIM_DATE ), FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L", FACT_ALLREPO[BuySell] = "B", _sp ),
+            "@cashB_x", CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS ( DIM_DATE ), FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L", FACT_ALLREPO[BuySell] = "B", _nsp ),
+            "@cashS_sp", CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS ( DIM_DATE ), FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L", FACT_ALLREPO[BuySell] = "S", _sp ),
+            "@cashS_x", CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS ( DIM_DATE ), FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L", FACT_ALLREPO[BuySell] = "S", _nsp ),
+            "@rn_sp", CALCULATE ( SUM ( FACT_ALLREPO[RiskNet_EUR] ), REMOVEFILTERS ( DIM_DATE ), FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L", _sp ),
+            "@rn_x", CALCULATE ( SUM ( FACT_ALLREPO[RiskNet_EUR] ), REMOVEFILTERS ( DIM_DATE ), FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L", _nsp ),
+            "@u17A", CALCULATE ( [17A Util], REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _d - 7, _d ) ),
+            "@u17B", CALCULATE ( [17B Util], REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _d - 7, _d ) ),
+            "@u16A", CALCULATE ( [16A Util], REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _d - 7, _d ) ),
+            "@cx16A", CALCULATE ( [Cx 16A Util], REMOVEFILTERS ( DIM_DATE ), DATESBETWEEN ( DIM_DATE[Date], _d - 7, _d ) ) )
+    // closeness flags: "incl" = utilisation closer to ALLREPO with sponsored, "excl" = closer without, "-" = no use / no sponsored on that side
+    VAR _f =
+        ADDCOLUMNS ( _t,
+            "@f17A", IF ( ISBLANK ( [@u17A] ) || ISBLANK ( [@cashB_sp] ), "-",
+                IF ( ABS ( [@u17A] - ( [@cashB_x] + [@cashB_sp] ) ) < ABS ( [@u17A] - [@cashB_x] ), "incl", "excl" ) ),
+            "@f17B", IF ( ISBLANK ( [@u17B] ) || ISBLANK ( [@cashS_sp] ), "-",
+                IF ( ABS ( [@u17B] - ( [@cashS_x] + [@cashS_sp] ) ) < ABS ( [@u17B] - [@cashS_x] ), "incl", "excl" ) ),
+            "@f16A", IF ( ISBLANK ( [@u16A] ) || ISBLANK ( [@rn_sp] ) || [@rn_sp] = 0, "-",
+                IF ( ABS ( [@u16A] - ( [@rn_x] + [@rn_sp] ) ) < ABS ( [@u16A] - [@rn_x] ), "incl", "excl" ) ),
+            "@fcx", IF ( ISBLANK ( [@cx16A] ) || ISBLANK ( [@rn_sp] ) || [@rn_sp] = 0, "-",
+                IF ( ABS ( [@cx16A] - ( [@rn_x] + [@rn_sp] ) ) < ABS ( [@cx16A] - [@rn_x] ), "incl", "excl" ) ) )
+
+// ---- SP0 labels carrying "sponsored" (any case), latest file, all clients: what exactly is being excluded --------------
+EVALUATE
+    CALCULATETABLE (
+        SUMMARIZECOLUMNS ( FACT_ALLREPO[InstLabel], FACT_ALLREPO[BuySell], FACT_ALLREPO[SLA_CateCode],
+            "Rows", COUNTROWS ( FACT_ALLREPO ), "CPYs", DISTINCTCOUNT ( FACT_ALLREPO[HeadOfficeSirisId] ),
+            "Cash_bn", SUM ( FACT_ALLREPO[CashAmount_EUR] ) / 1E9, "RiskNet_m", SUM ( FACT_ALLREPO[RiskNet_EUR] ) / 1E6 ),
+        REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _d, _sp )
+
+// ---- SP1 per CPY (top 60 by sponsored cash): the test. €m ------------------------------------------------------------
+EVALUATE
+    TOPN ( 60,
+        SELECTCOLUMNS ( _f,
+            "CPY", LOOKUPVALUE ( DIM_COUNTERPARTY[CPY Label], DIM_COUNTERPARTY[HeadOfficeSirisId], DIM_COUNTERPARTY[HeadOfficeSirisId] ),
+            "CPH", LOOKUPVALUE ( DIM_COUNTERPARTY[CPH_Label], DIM_COUNTERPARTY[HeadOfficeSirisId], DIM_COUNTERPARTY[HeadOfficeSirisId] ),
+            "HF", LOOKUPVALUE ( DIM_COUNTERPARTY[HF Scope], DIM_COUNTERPARTY[HeadOfficeSirisId], DIM_COUNTERPARTY[HeadOfficeSirisId] ),
+            "SpCash_m", ( [@cashB_sp] + [@cashS_sp] ) / 1E6,
+            "SpShare", DIVIDE ( [@cashB_sp] + [@cashS_sp], [@cashB_sp] + [@cashS_sp] + [@cashB_x] + [@cashS_x] ),
+            "Util17A_m", [@u17A] / 1E6, "CashB_x_m", [@cashB_x] / 1E6, "CashB_sp_m", [@cashB_sp] / 1E6, "17A", [@f17A],
+            "Util17B_m", [@u17B] / 1E6, "CashS_x_m", [@cashS_x] / 1E6, "CashS_sp_m", [@cashS_sp] / 1E6, "17B", [@f17B],
+            "Util16A_m", [@u16A] / 1E6, "Cx16A_m", [@cx16A] / 1E6, "RiskNet_x_m", [@rn_x] / 1E6, "RiskNet_sp_m", [@rn_sp] / 1E6,
+            "16A", [@f16A], "Cx16A", [@fcx] ),
+        [SpCash_m], DESC )
+    ORDER BY [SpCash_m] DESC
+
+// ---- SP2 test summary: how many CPYs point to "counted" vs "not counted", per limit --------------------------------
+EVALUATE
+    VAR _g = UNION (
+        SELECTCOLUMNS ( _f, "Limit", "17A (RECONC)", "Flag", [@f17A] ),
+        SELECTCOLUMNS ( _f, "Limit", "17B (RECONC)", "Flag", [@f17B] ),
+        SELECTCOLUMNS ( _f, "Limit", "16A (facts)", "Flag", [@f16A] ),
+        SELECTCOLUMNS ( _f, "Limit", "16A (CORTEX)", "Flag", [@fcx] ) )
+    RETURN GROUPBY ( _g, [Limit], [Flag], "CPYs", SUMX ( CURRENTGROUP (), 1 ) )
+    ORDER BY [Limit], [Flag]
+
+// ---- SP3 who uses the sponsored programme: by sector / HF scope / MCG, vs all clients with repo on the file ----------
+EVALUATE
+    VAR _all = CALCULATETABLE ( VALUES ( FACT_ALLREPO[HeadOfficeSirisId] ), REMOVEFILTERS (),
+        FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L" )
+    VAR _rows =
+        ADDCOLUMNS (
+            CALCULATETABLE ( SUMMARIZE ( DIM_COUNTERPARTY, DIM_COUNTERPARTY[HeadOfficeSirisId], DIM_COUNTERPARTY[Sector],
+                DIM_COUNTERPARTY[HF Scope], DIM_COUNTERPARTY[MCG_Code] ), TREATAS ( _all, DIM_COUNTERPARTY[HeadOfficeSirisId] ) ),
+            "@isSp", IF ( DIM_COUNTERPARTY[HeadOfficeSirisId] IN _ids, 1, 0 ) )
+    RETURN
+        GROUPBY ( _rows, DIM_COUNTERPARTY[Sector], DIM_COUNTERPARTY[HF Scope], DIM_COUNTERPARTY[MCG_Code],
+            "RepoCPYs", SUMX ( CURRENTGROUP (), 1 ), "SponsoredCPYs", SUMX ( CURRENTGROUP (), [@isSp] ) )
+    ORDER BY [SponsoredCPYs] DESC
+
+// ---- SP4 who: by country and by CPH (sponsored cash, €bn), top 25 CPHs -------------------------------------------------
+EVALUATE
+    TOPN ( 25,
+        CALCULATETABLE (
+            SUMMARIZECOLUMNS ( DIM_COUNTERPARTY[CPH_Label], DIM_COUNTERPARTY[CountryName],
+                "SpCPYs", DISTINCTCOUNT ( FACT_ALLREPO[HeadOfficeSirisId] ),
+                "SpCash_bn", SUM ( FACT_ALLREPO[CashAmount_EUR] ) / 1E9,
+                "SpRiskNet_m", SUM ( FACT_ALLREPO[RiskNet_EUR] ) / 1E6 ),
+            REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L", _sp ),
+        [SpCash_bn], DESC )
+    ORDER BY [SpCash_bn] DESC
+
+// ---- SP5 by month (last ALLREPO file of each of the last 12 months): sponsored size and the counting test aggregated
+//      over that month's sponsored CPYs. A flip in "closer" or a jump in the gaps = treatment changed. €m -------------
+EVALUATE
+    VAR _months =
+        FILTER (
+            ADDCOLUMNS (
+                CALCULATETABLE ( VALUES ( DIM_DATE[YearMonth] ), REMOVEFILTERS (), DIM_DATE[Date] > _d - 370, DIM_DATE[Date] <= _d ),
+                "@me", CALCULATE ( MAX ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS ( FACT_ALLREPO ), REMOVEFILTERS ( DIM_COUNTERPARTY ) ) ),
+            NOT ISBLANK ( [@me] ) )
+    RETURN
+        ADDCOLUMNS ( _months,
+            "SpCPYs", VAR m = [@me] RETURN CALCULATE ( DISTINCTCOUNT ( FACT_ALLREPO[HeadOfficeSirisId] ), REMOVEFILTERS (),
+                FACT_ALLREPO[SnapshotDate] = m, FACT_ALLREPO[SLA_CateCode] = "07L", _sp ),
+            "SpCash_bn", VAR m = [@me] RETURN CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS (),
+                FACT_ALLREPO[SnapshotDate] = m, FACT_ALLREPO[SLA_CateCode] = "07L", _sp ) / 1E9,
+            "Util17B_m", VAR m = [@me]
+                VAR ids = CALCULATETABLE ( VALUES ( FACT_ALLREPO[HeadOfficeSirisId] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = m, FACT_ALLREPO[SLA_CateCode] = "07L", _sp )
+                RETURN CALCULATE ( [17B Util], REMOVEFILTERS (), TREATAS ( ids, DIM_COUNTERPARTY[HeadOfficeSirisId] ), DATESBETWEEN ( DIM_DATE[Date], m - 7, m ) ) / 1E6,
+            "CashS_x_m", VAR m = [@me]
+                VAR ids = CALCULATETABLE ( VALUES ( FACT_ALLREPO[HeadOfficeSirisId] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = m, FACT_ALLREPO[SLA_CateCode] = "07L", _sp )
+                RETURN CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS (), TREATAS ( ids, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[SnapshotDate] = m, FACT_ALLREPO[SLA_CateCode] = "07L", FACT_ALLREPO[BuySell] = "S", _nsp ) / 1E6,
+            "CashS_sp_m", VAR m = [@me]
+                RETURN CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = m, FACT_ALLREPO[SLA_CateCode] = "07L", FACT_ALLREPO[BuySell] = "S", _sp ) / 1E6,
+            "Util17A_m", VAR m = [@me]
+                VAR ids = CALCULATETABLE ( VALUES ( FACT_ALLREPO[HeadOfficeSirisId] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = m, FACT_ALLREPO[SLA_CateCode] = "07L", _sp )
+                RETURN CALCULATE ( [17A Util], REMOVEFILTERS (), TREATAS ( ids, DIM_COUNTERPARTY[HeadOfficeSirisId] ), DATESBETWEEN ( DIM_DATE[Date], m - 7, m ) ) / 1E6,
+            "CashB_x_m", VAR m = [@me]
+                VAR ids = CALCULATETABLE ( VALUES ( FACT_ALLREPO[HeadOfficeSirisId] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = m, FACT_ALLREPO[SLA_CateCode] = "07L", _sp )
+                RETURN CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS (), TREATAS ( ids, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[SnapshotDate] = m, FACT_ALLREPO[SLA_CateCode] = "07L", FACT_ALLREPO[BuySell] = "B", _nsp ) / 1E6,
+            "CashB_sp_m", VAR m = [@me]
+                RETURN CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = m, FACT_ALLREPO[SLA_CateCode] = "07L", FACT_ALLREPO[BuySell] = "B", _sp ) / 1E6 )
+    ORDER BY DIM_DATE[YearMonth]
+
+// ---- SP6 sponsored collateral: issuer group × side (face €bn) — what goes through the programme -------------------------
+EVALUATE
+    VAR _r =
+        CALCULATETABLE (
+            ADDCOLUMNS ( SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[IssuerId], FACT_ALLREPO[BuySell] ),
+                "@f", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ),
+                "@g", COALESCE ( LOOKUPVALUE ( 'P6W Issuer Map'[Group], 'P6W Issuer Map'[IssuerId], FACT_ALLREPO[IssuerId] ), "No bond detail" ) ),
+            REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _d, FACT_ALLREPO[SLA_CateCode] = "07L", _sp )
+    RETURN GROUPBY ( _r, [@g], FACT_ALLREPO[BuySell], "Face_bn", SUMX ( CURRENTGROUP (), [@f] ) / 1E9, "Issuers", SUMX ( CURRENTGROUP (), 1 ) )
+    ORDER BY [Face_bn] DESC
