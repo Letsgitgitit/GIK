@@ -1,0 +1,28 @@
+
+
+    VAR _ids = { "0000000000" }                 
+    VAR _notSp = FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) )
+EVALUATE
+    VAR _files = CALCULATETABLE ( VALUES ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS (),
+        FACT_ALLREPO[SnapshotDate] >= DATE ( 2026, 11, 3 ), FACT_ALLREPO[SnapshotDate] <= DATE ( 2026, 11, 13 ) )
+    RETURN
+        ADDCOLUMNS ( _files,
+            "Repo_bn", VAR d = FACT_ALLREPO[SnapshotDate] RETURN CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS (),
+                TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[SnapshotDate] = d, FACT_ALLREPO[SLA_CateCode] = "07L",
+                FACT_ALLREPO[BuySell] = "B", _notSp, FILTER ( ALL ( FACT_ALLREPO[StartDate] ), FACT_ALLREPO[StartDate] <= d ) ) / 1E9,
+            "RevRepo_bn", VAR d = FACT_ALLREPO[SnapshotDate] RETURN CALCULATE ( SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS (),
+                TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[SnapshotDate] = d, FACT_ALLREPO[SLA_CateCode] = "07L",
+                FACT_ALLREPO[BuySell] = "S", _notSp, FILTER ( ALL ( FACT_ALLREPO[StartDate] ), FACT_ALLREPO[StartDate] <= d ) ) / 1E9,
+            "MtM_m", VAR d = FACT_ALLREPO[SnapshotDate] RETURN
+                ( CALCULATE ( SUM ( FACT_ALLREPO[MTMSecurity_EUR] ) - SUM ( FACT_ALLREPO[MTMCash_EUR] ), REMOVEFILTERS (),
+                    TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[SnapshotDate] = d, FACT_ALLREPO[SLA_CateCode] = "07L",
+                    FACT_ALLREPO[BuySell] = "B", _notSp, FILTER ( ALL ( FACT_ALLREPO[StartDate] ), FACT_ALLREPO[StartDate] <= d ) )
+                - CALCULATE ( SUM ( FACT_ALLREPO[MTMSecurity_EUR] ) - SUM ( FACT_ALLREPO[MTMCash_EUR] ), REMOVEFILTERS (),
+                    TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[SnapshotDate] = d, FACT_ALLREPO[SLA_CateCode] = "07L",
+                    FACT_ALLREPO[BuySell] = "S", _notSp, FILTER ( ALL ( FACT_ALLREPO[StartDate] ), FACT_ALLREPO[StartDate] <= d ) ) ) / 1E6,
+            "MtMCashLeg_m", VAR d = FACT_ALLREPO[SnapshotDate] RETURN CALCULATE ( SUM ( FACT_ALLREPO[MTMCash_EUR] ) - SUM ( FACT_ALLREPO[CashAmount_EUR] ), REMOVEFILTERS (),
+                TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[SnapshotDate] = d, FACT_ALLREPO[SLA_CateCode] = "07L",
+                _notSp, FILTER ( ALL ( FACT_ALLREPO[StartDate] ), FACT_ALLREPO[StartDate] <= d ) ) / 1E6 )
+    ORDER BY FACT_ALLREPO[SnapshotDate]
+// MtMCashLeg_m = cash-leg MtM minus cash amount (≈ accrued repo interest): if the MtM gap to the note is about this size,
+// the difference is accrued interest, not dates.
