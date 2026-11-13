@@ -1,68 +1,129 @@
 // =====================================================================================
-// P6B_16A_BRIDGE_CHECK.dax  -  BUILD 2026-11-12a  -  read-only, DAX query view
-// Question: can our facts reproduce a market-risk explanation of a 16A spike (repo MtM vs collateral)?
-// Test case: one fund, COB 4 Nov -> 11 Nov 2026. Market risk quoted: MtM -119m -> -65m (in our favour), collateral posted
-// by us 93m -> 90m, repo notional 4.9bn -> 4.9bn, reverse repo notional 10.4bn -> 10.6bn.
-// Set _ids below (the fund's Ricos, 10 digits; add the other entities under the same GMRA if any) and run.
-// If a column does not exist (light ALLREPO gold), comment that line out (select > Ctrl+/) and flag it.
-// B1 = 16A per file day (util, limit, MtM columns) ; B2 = ALLREPO per file day and side ; B3 = trades new / gone.
+// P6B_16A_BRIDGE_CHECK_2.dax  -  BUILD 2026-11-12b  -  read-only, DAX query view
+// Second pass on the 16A spike (one fund, 6 -> 11 Nov 2026), now with the ALLREPO MtM columns back.
+// Splits the reverse-repo (S) net-risk jump into: trades kept (MtM moved / haircut moved), trades new, trades gone;
+// shows netting (gross - net risk) and the issuer groups behind it.
+// SET: _ids (same Ricos as check 1) ; _p0 / _p1 = the two ALLREPO files to compare (rerun with 6->9 and 9->11 Nov too).
+// If the MtM columns sit in a separate test query and not in FACT_ALLREPO, Ctrl+H: FACT_ALLREPO -> that query's name.
+// Columns used: MarkToMark_EUR, MTMSecurity_EUR, MTMCash_EUR, RiskNet_EUR, RiskBrut_EUR, NotionalBond_EUR, HaircutValue,
+// CCCTradeKey, BuySell, IssuerId, SnapshotDate, SLA_CateCode, InstLabel, HeadOfficeSirisId.
+// C1 per file and side ; C2 bridge kept / new / gone (S and B) ; C3 the 15 kept trades whose net risk moved most ;
+// C4 S side by issuer group at _p0 and _p1.
 // =====================================================================================
 DEFINE
-    VAR _ids = { "0000000000" }                 // <- replace with the fund's Ricos
-    VAR _d0 = DATE ( 2026, 11, 1 )
-    VAR _d1 = DATE ( 2026, 11, 12 )
+    VAR _ids = { "0000000000" }                 // <- the fund's Ricos (as in check 1)
+    VAR _p0 = DATE ( 2026, 11, 6 )
+    VAR _p1 = DATE ( 2026, 11, 11 )
+    VAR _w0 = DATE ( 2026, 10, 20 )
+    VAR _w1 = DATE ( 2026, 11, 12 )
+    VAR _notSp = FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) )
+    // one row per trade and side at a file date: MtM, net / gross risk, face, face x haircut
+    VAR _t0 =
+        CALCULATETABLE (
+            ADDCOLUMNS ( SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[CCCTradeKey], FACT_ALLREPO[BuySell], FACT_ALLREPO[IssuerId] ),
+                "@m", CALCULATE ( SUM ( FACT_ALLREPO[MarkToMark_EUR] ) ),
+                "@rn", CALCULATE ( SUM ( FACT_ALLREPO[RiskNet_EUR] ) ),
+                "@rb", CALCULATE ( SUM ( FACT_ALLREPO[RiskBrut_EUR] ) ),
+                "@f", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ),
+                "@hf", CALCULATE ( SUMX ( FACT_ALLREPO, FACT_ALLREPO[NotionalBond_EUR] * FACT_ALLREPO[HaircutValue] ) ) ),
+            REMOVEFILTERS (), TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[SnapshotDate] = _p0,
+            FACT_ALLREPO[SLA_CateCode] = "07L", _notSp )
+    VAR _t1 =
+        CALCULATETABLE (
+            ADDCOLUMNS ( SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[CCCTradeKey], FACT_ALLREPO[BuySell], FACT_ALLREPO[IssuerId] ),
+                "@m", CALCULATE ( SUM ( FACT_ALLREPO[MarkToMark_EUR] ) ),
+                "@rn", CALCULATE ( SUM ( FACT_ALLREPO[RiskNet_EUR] ) ),
+                "@rb", CALCULATE ( SUM ( FACT_ALLREPO[RiskBrut_EUR] ) ),
+                "@f", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ),
+                "@hf", CALCULATE ( SUMX ( FACT_ALLREPO, FACT_ALLREPO[NotionalBond_EUR] * FACT_ALLREPO[HaircutValue] ) ) ),
+            REMOVEFILTERS (), TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ), FACT_ALLREPO[SnapshotDate] = _p1,
+            FACT_ALLREPO[SLA_CateCode] = "07L", _notSp )
+    VAR _k0 = SELECTCOLUMNS ( _t0, "k", FACT_ALLREPO[CCCTradeKey] & "|" & FACT_ALLREPO[BuySell] )
+    VAR _k1 = SELECTCOLUMNS ( _t1, "k", FACT_ALLREPO[CCCTradeKey] & "|" & FACT_ALLREPO[BuySell] )
+    // kept trades with their start values attached
+    VAR _kept =
+        ADDCOLUMNS (
+            FILTER ( _t1, FACT_ALLREPO[CCCTradeKey] & "|" & FACT_ALLREPO[BuySell] IN _k0 ),
+            "@m0", VAR k = FACT_ALLREPO[CCCTradeKey] VAR s = FACT_ALLREPO[BuySell]
+                   RETURN SUMX ( FILTER ( _t0, FACT_ALLREPO[CCCTradeKey] = k && FACT_ALLREPO[BuySell] = s ), [@m] ),
+            "@rn0", VAR k = FACT_ALLREPO[CCCTradeKey] VAR s = FACT_ALLREPO[BuySell]
+                   RETURN SUMX ( FILTER ( _t0, FACT_ALLREPO[CCCTradeKey] = k && FACT_ALLREPO[BuySell] = s ), [@rn] ),
+            "@rb0", VAR k = FACT_ALLREPO[CCCTradeKey] VAR s = FACT_ALLREPO[BuySell]
+                   RETURN SUMX ( FILTER ( _t0, FACT_ALLREPO[CCCTradeKey] = k && FACT_ALLREPO[BuySell] = s ), [@rb] ),
+            "@f0", VAR k = FACT_ALLREPO[CCCTradeKey] VAR s = FACT_ALLREPO[BuySell]
+                   RETURN SUMX ( FILTER ( _t0, FACT_ALLREPO[CCCTradeKey] = k && FACT_ALLREPO[BuySell] = s ), [@f] ),
+            "@hf0", VAR k = FACT_ALLREPO[CCCTradeKey] VAR s = FACT_ALLREPO[BuySell]
+                   RETURN SUMX ( FILTER ( _t0, FACT_ALLREPO[CCCTradeKey] = k && FACT_ALLREPO[BuySell] = s ), [@hf] ) )
+    VAR _new = FILTER ( _t1, NOT ( FACT_ALLREPO[CCCTradeKey] & "|" & FACT_ALLREPO[BuySell] IN _k0 ) )
+    VAR _gone = FILTER ( _t0, NOT ( FACT_ALLREPO[CCCTradeKey] & "|" & FACT_ALLREPO[BuySell] IN _k1 ) )
 
-// ---- B1 16A per file: utilisation, limit and the two MtM columns (once per authorisation, as the P1 measures) -------
-EVALUATE
-    VAR _days = CALCULATETABLE ( VALUES ( FACT_LIMIT_16A[SnapshotDate] ), REMOVEFILTERS (),
-        FACT_LIMIT_16A[SnapshotDate] >= _d0, FACT_LIMIT_16A[SnapshotDate] <= _d1 )
-    RETURN
-        ADDCOLUMNS ( _days,
-            "Util_m", VAR d = FACT_LIMIT_16A[SnapshotDate] RETURN CALCULATE (
-                SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[Utilisation] ) ) ),
-                REMOVEFILTERS (), TREATAS ( _ids, FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[SnapshotDate] = d,
-                FACT_LIMIT_16A[StructureType] <> "No authorisation" ) / 1E6,
-            "Limit_m", VAR d = FACT_LIMIT_16A[SnapshotDate] RETURN CALCULATE (
-                SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[Amount] ) ) ),
-                REMOVEFILTERS (), TREATAS ( _ids, FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[SnapshotDate] = d,
-                FACT_LIMIT_16A[StructureType] <> "No authorisation" ) / 1E6,
-            "MtM_m", VAR d = FACT_LIMIT_16A[SnapshotDate] RETURN CALCULATE (
-                SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[MtM] ) ) ),
-                REMOVEFILTERS (), TREATAS ( _ids, FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[SnapshotDate] = d ) / 1E6,
-            "MtM_BO_m", VAR d = FACT_LIMIT_16A[SnapshotDate] RETURN CALCULATE (
-                SUMX ( VALUES ( FACT_LIMIT_16A[AuthorisationId] ), CALCULATE ( MAX ( FACT_LIMIT_16A[MtM_BO_EUR] ) ) ),
-                REMOVEFILTERS (), TREATAS ( _ids, FACT_LIMIT_16A[HeadOfficeSirisId] ), FACT_LIMIT_16A[SnapshotDate] = d ) / 1E6 )
-    ORDER BY FACT_LIMIT_16A[SnapshotDate]
-
-// ---- B2 ALLREPO per file and side (B = repo 17A, S = reverse repo 17B), repo rows, Sponsored excluded --------------------
+// ---- C1 per file and side, window 20 Oct -> 12 Nov: MtM (net, bond leg, cash leg), net / gross risk, netting benefit ---
 EVALUATE
     CALCULATETABLE (
         SUMMARIZECOLUMNS ( FACT_ALLREPO[SnapshotDate], FACT_ALLREPO[BuySell],
             "Trades", DISTINCTCOUNT ( FACT_ALLREPO[CCCTradeKey] ),
             "Face_bn", SUM ( FACT_ALLREPO[NotionalBond_EUR] ) / 1E9,
-            "Cash_bn", SUM ( FACT_ALLREPO[CashAmount_EUR] ) / 1E9,          // comment out if not in the light gold
+            "MtM_m", SUM ( FACT_ALLREPO[MarkToMark_EUR] ) / 1E6,
+            "MtMSec_m", SUM ( FACT_ALLREPO[MTMSecurity_EUR] ) / 1E6,
+            "MtMCash_m", SUM ( FACT_ALLREPO[MTMCash_EUR] ) / 1E6,
             "RiskNet_m", SUM ( FACT_ALLREPO[RiskNet_EUR] ) / 1E6,
-            "RiskGross_m", SUM ( FACT_ALLREPO[RiskBrutter_EUR] ) / 1E6,     // comment out if not in the light gold
+            "RiskGross_m", SUM ( FACT_ALLREPO[RiskBrut_EUR] ) / 1E6,
+            "Netting_m", ( SUM ( FACT_ALLREPO[RiskBrut_EUR] ) - SUM ( FACT_ALLREPO[RiskNet_EUR] ) ) / 1E6,
             "HaircutWtd", DIVIDE ( SUMX ( FACT_ALLREPO, FACT_ALLREPO[NotionalBond_EUR] * FACT_ALLREPO[HaircutValue] ),
                 SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ) ),
         REMOVEFILTERS (), TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ),
-        FACT_ALLREPO[SnapshotDate] >= _d0, FACT_ALLREPO[SnapshotDate] <= _d1, FACT_ALLREPO[SLA_CateCode] = "07L",
-        FILTER ( ALL ( FACT_ALLREPO[InstLabel] ), NOT CONTAINSSTRING ( FACT_ALLREPO[InstLabel], "Sponsored" ) ) )
+        FACT_ALLREPO[SnapshotDate] >= _w0, FACT_ALLREPO[SnapshotDate] <= _w1, FACT_ALLREPO[SLA_CateCode] = "07L", _notSp )
     ORDER BY FACT_ALLREPO[SnapshotDate], FACT_ALLREPO[BuySell]
 
-// ---- B3 trade turnover between the first and the last ALLREPO file of the window: new, gone, kept (face, €bn) ----------
+// ---- C2 bridge _p0 -> _p1 per side (€m): kept trades (MtM move, net-risk move, haircut before / after), new, gone -----
 EVALUATE
-    VAR _f0 = CALCULATE ( MIN ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] >= _d0 )
-    VAR _f1 = CALCULATE ( MAX ( FACT_ALLREPO[SnapshotDate] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] <= _d1 )
-    VAR _k0 = CALCULATETABLE ( VALUES ( FACT_ALLREPO[CCCTradeKey] ), REMOVEFILTERS (), TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ),
-        FACT_ALLREPO[SnapshotDate] = _f0, FACT_ALLREPO[SLA_CateCode] = "07L" )
-    VAR _k1 = CALCULATETABLE ( VALUES ( FACT_ALLREPO[CCCTradeKey] ), REMOVEFILTERS (), TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ),
-        FACT_ALLREPO[SnapshotDate] = _f1, FACT_ALLREPO[SLA_CateCode] = "07L" )
+    ADDCOLUMNS (
+        DATATABLE ( "Side", STRING, { { "B" }, { "S" } } ),
+        "Kept_n", VAR s = [Side] RETURN COUNTROWS ( FILTER ( _kept, FACT_ALLREPO[BuySell] = s ) ) + 0,
+        "Kept_dMtM", VAR s = [Side] RETURN SUMX ( FILTER ( _kept, FACT_ALLREPO[BuySell] = s ), [@m] - [@m0] ) / 1E6,
+        "Kept_dRiskNet", VAR s = [Side] RETURN SUMX ( FILTER ( _kept, FACT_ALLREPO[BuySell] = s ), [@rn] - [@rn0] ) / 1E6,
+        "Kept_dRiskGross", VAR s = [Side] RETURN SUMX ( FILTER ( _kept, FACT_ALLREPO[BuySell] = s ), [@rb] - [@rb0] ) / 1E6,
+        "Kept_dFace_bn", VAR s = [Side] RETURN SUMX ( FILTER ( _kept, FACT_ALLREPO[BuySell] = s ), [@f] - [@f0] ) / 1E9,
+        "Kept_HC0", VAR s = [Side] RETURN DIVIDE ( SUMX ( FILTER ( _kept, FACT_ALLREPO[BuySell] = s ), [@hf0] ),
+            SUMX ( FILTER ( _kept, FACT_ALLREPO[BuySell] = s ), [@f0] ) ),
+        "Kept_HC1", VAR s = [Side] RETURN DIVIDE ( SUMX ( FILTER ( _kept, FACT_ALLREPO[BuySell] = s ), [@hf] ),
+            SUMX ( FILTER ( _kept, FACT_ALLREPO[BuySell] = s ), [@f] ) ),
+        "New_n", VAR s = [Side] RETURN COUNTROWS ( FILTER ( _new, FACT_ALLREPO[BuySell] = s ) ) + 0,
+        "New_MtM", VAR s = [Side] RETURN SUMX ( FILTER ( _new, FACT_ALLREPO[BuySell] = s ), [@m] ) / 1E6,
+        "New_RiskNet", VAR s = [Side] RETURN SUMX ( FILTER ( _new, FACT_ALLREPO[BuySell] = s ), [@rn] ) / 1E6,
+        "New_Face_bn", VAR s = [Side] RETURN SUMX ( FILTER ( _new, FACT_ALLREPO[BuySell] = s ), [@f] ) / 1E9,
+        "Gone_n", VAR s = [Side] RETURN COUNTROWS ( FILTER ( _gone, FACT_ALLREPO[BuySell] = s ) ) + 0,
+        "Gone_MtM", VAR s = [Side] RETURN SUMX ( FILTER ( _gone, FACT_ALLREPO[BuySell] = s ), [@m] ) / 1E6,
+        "Gone_RiskNet", VAR s = [Side] RETURN SUMX ( FILTER ( _gone, FACT_ALLREPO[BuySell] = s ), [@rn] ) / 1E6,
+        "Gone_Face_bn", VAR s = [Side] RETURN SUMX ( FILTER ( _gone, FACT_ALLREPO[BuySell] = s ), [@f] ) / 1E9 )
+
+// ---- C3 the 15 kept trades whose net risk moved most (€m), with issuer and haircut before / after ---------------------
+EVALUATE
+    TOPN ( 15,
+        SELECTCOLUMNS ( _kept,
+            "Trade", FACT_ALLREPO[CCCTradeKey], "Side", FACT_ALLREPO[BuySell],
+            "Issuer", LOOKUPVALUE ( 'P6W Issuer Map'[IssuerName], 'P6W Issuer Map'[IssuerId], FACT_ALLREPO[IssuerId] ),
+            "Group", LOOKUPVALUE ( 'P6W Issuer Map'[Group], 'P6W Issuer Map'[IssuerId], FACT_ALLREPO[IssuerId] ),
+            "Face_m", [@f] / 1E6, "MtM0_m", [@m0] / 1E6, "MtM1_m", [@m] / 1E6,
+            "RiskNet0_m", [@rn0] / 1E6, "RiskNet1_m", [@rn] / 1E6, "dRiskNet_m", ( [@rn] - [@rn0] ) / 1E6,
+            "HC0", DIVIDE ( [@hf0], [@f0] ), "HC1", DIVIDE ( [@hf], [@f] ) ),
+        ABS ( [dRiskNet_m] ), DESC )
+    ORDER BY [dRiskNet_m] DESC
+
+// ---- C4 S side by issuer group at _p0 and _p1 (face, MtM, net risk): new underlyings / mix shift -------------------
+EVALUATE
+    VAR _g0 = ADDCOLUMNS ( FILTER ( _t0, FACT_ALLREPO[BuySell] = "S" ), "@g",
+        COALESCE ( LOOKUPVALUE ( 'P6W Issuer Map'[Group], 'P6W Issuer Map'[IssuerId], FACT_ALLREPO[IssuerId] ), "No bond detail" ) )
+    VAR _g1 = ADDCOLUMNS ( FILTER ( _t1, FACT_ALLREPO[BuySell] = "S" ), "@g",
+        COALESCE ( LOOKUPVALUE ( 'P6W Issuer Map'[Group], 'P6W Issuer Map'[IssuerId], FACT_ALLREPO[IssuerId] ), "No bond detail" ) )
     RETURN
-        ROW ( "From", _f0, "To", _f1,
-            "New_trades", COUNTROWS ( EXCEPT ( _k1, _k0 ) ), "Gone_trades", COUNTROWS ( EXCEPT ( _k0, _k1 ) ),
-            "Kept_trades", COUNTROWS ( INTERSECT ( _k0, _k1 ) ),
-            "New_face_bn", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _f1,
-                TREATAS ( EXCEPT ( _k1, _k0 ), FACT_ALLREPO[CCCTradeKey] ), TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ) ) / 1E9,
-            "Gone_face_bn", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ), REMOVEFILTERS (), FACT_ALLREPO[SnapshotDate] = _f0,
-                TREATAS ( EXCEPT ( _k0, _k1 ), FACT_ALLREPO[CCCTradeKey] ), TREATAS ( _ids, FACT_ALLREPO[HeadOfficeSirisId] ) ) / 1E9 )
+        ADDCOLUMNS ( DISTINCT ( UNION ( SELECTCOLUMNS ( _g0, "Group", [@g] ), SELECTCOLUMNS ( _g1, "Group", [@g] ) ) ),
+            "Face0_bn", VAR g = [Group] RETURN SUMX ( FILTER ( _g0, [@g] = g ), [@f] ) / 1E9,
+            "Face1_bn", VAR g = [Group] RETURN SUMX ( FILTER ( _g1, [@g] = g ), [@f] ) / 1E9,
+            "MtM0_m", VAR g = [Group] RETURN SUMX ( FILTER ( _g0, [@g] = g ), [@m] ) / 1E6,
+            "MtM1_m", VAR g = [Group] RETURN SUMX ( FILTER ( _g1, [@g] = g ), [@m] ) / 1E6,
+            "RiskNet0_m", VAR g = [Group] RETURN SUMX ( FILTER ( _g0, [@g] = g ), [@rn] ) / 1E6,
+            "RiskNet1_m", VAR g = [Group] RETURN SUMX ( FILTER ( _g1, [@g] = g ), [@rn] ) / 1E6,
+            "Issuers0", VAR g = [Group] RETURN COUNTROWS ( DISTINCT ( SELECTCOLUMNS ( FILTER ( _g0, [@g] = g ), "i", FACT_ALLREPO[IssuerId] ) ) ),
+            "Issuers1", VAR g = [Group] RETURN COUNTROWS ( DISTINCT ( SELECTCOLUMNS ( FILTER ( _g1, [@g] = g ), "i", FACT_ALLREPO[IssuerId] ) ) ) )
+    ORDER BY [RiskNet1_m] DESC
