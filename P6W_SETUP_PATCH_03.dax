@@ -1,11 +1,13 @@
 // =====================================================================================
-// P6B_16A_BRIDGE_CHECK_2.dax  -  BUILD 2026-11-12b  -  read-only, DAX query view
+// P6B_16A_BRIDGE_CHECK_2.dax  -  BUILD 2026-11-12c  -  read-only, DAX query view
 // Second pass on the 16A spike (one fund, 6 -> 11 Nov 2026), now with the ALLREPO MtM columns back.
 // Splits the reverse-repo (S) net-risk jump into: trades kept (MtM moved / haircut moved), trades new, trades gone;
 // shows netting (gross - net risk) and the issuer groups behind it.
 // SET: _ids (same Ricos as check 1) ; _p0 / _p1 = the two ALLREPO files to compare (rerun with 6->9 and 9->11 Nov too).
 // If the MtM columns sit in a separate test query and not in FACT_ALLREPO, Ctrl+H: FACT_ALLREPO -> that query's name.
-// Columns used: MarkToMark_EUR, MTMSecurity_EUR, MTMCash_EUR, RiskNet_EUR, RiskBrut_EUR, NotionalBond_EUR, HaircutValue,
+// 12c: no MarkToMark_EUR in ALLREPO. "MtM" = MTMSecurity_EUR - MTMCash_EUR (bond leg minus cash leg); C1 shows both legs
+// so the sign can be checked against 16A MtM_BO_EUR.
+// Columns used: MTMSecurity_EUR, MTMCash_EUR, RiskNet_EUR, RiskBrut_EUR, NotionalBond_EUR, HaircutValue,
 // CCCTradeKey, BuySell, IssuerId, SnapshotDate, SLA_CateCode, InstLabel, HeadOfficeSirisId.
 // C1 per file and side ; C2 bridge kept / new / gone (S and B) ; C3 the 15 kept trades whose net risk moved most ;
 // C4 S side by issuer group at _p0 and _p1.
@@ -21,7 +23,7 @@ DEFINE
     VAR _t0 =
         CALCULATETABLE (
             ADDCOLUMNS ( SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[CCCTradeKey], FACT_ALLREPO[BuySell], FACT_ALLREPO[IssuerId] ),
-                "@m", CALCULATE ( SUM ( FACT_ALLREPO[MarkToMark_EUR] ) ),
+                "@m", CALCULATE ( SUM ( FACT_ALLREPO[MTMSecurity_EUR] ) - SUM ( FACT_ALLREPO[MTMCash_EUR] ) ),
                 "@rn", CALCULATE ( SUM ( FACT_ALLREPO[RiskNet_EUR] ) ),
                 "@rb", CALCULATE ( SUM ( FACT_ALLREPO[RiskBrut_EUR] ) ),
                 "@f", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ),
@@ -31,7 +33,7 @@ DEFINE
     VAR _t1 =
         CALCULATETABLE (
             ADDCOLUMNS ( SUMMARIZE ( FACT_ALLREPO, FACT_ALLREPO[CCCTradeKey], FACT_ALLREPO[BuySell], FACT_ALLREPO[IssuerId] ),
-                "@m", CALCULATE ( SUM ( FACT_ALLREPO[MarkToMark_EUR] ) ),
+                "@m", CALCULATE ( SUM ( FACT_ALLREPO[MTMSecurity_EUR] ) - SUM ( FACT_ALLREPO[MTMCash_EUR] ) ),
                 "@rn", CALCULATE ( SUM ( FACT_ALLREPO[RiskNet_EUR] ) ),
                 "@rb", CALCULATE ( SUM ( FACT_ALLREPO[RiskBrut_EUR] ) ),
                 "@f", CALCULATE ( SUM ( FACT_ALLREPO[NotionalBond_EUR] ) ),
@@ -63,7 +65,7 @@ EVALUATE
         SUMMARIZECOLUMNS ( FACT_ALLREPO[SnapshotDate], FACT_ALLREPO[BuySell],
             "Trades", DISTINCTCOUNT ( FACT_ALLREPO[CCCTradeKey] ),
             "Face_bn", SUM ( FACT_ALLREPO[NotionalBond_EUR] ) / 1E9,
-            "MtM_m", SUM ( FACT_ALLREPO[MarkToMark_EUR] ) / 1E6,
+            "MtM_m", ( SUM ( FACT_ALLREPO[MTMSecurity_EUR] ) - SUM ( FACT_ALLREPO[MTMCash_EUR] ) ) / 1E6,
             "MtMSec_m", SUM ( FACT_ALLREPO[MTMSecurity_EUR] ) / 1E6,
             "MtMCash_m", SUM ( FACT_ALLREPO[MTMCash_EUR] ) / 1E6,
             "RiskNet_m", SUM ( FACT_ALLREPO[RiskNet_EUR] ) / 1E6,
