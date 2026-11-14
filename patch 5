@@ -54,3 +54,27 @@ DATATABLE (
         { "Forward-starting (not counted)", 9 }
     }
 )
+
+
+P6 X1 Line 1 =
+VAR _w = [P6 X Weeks]
+VAR _t = [P6 X Tenor]
+VAR _n = [P6 X Tenor Norm]
+RETURN
+    FORMAT ( COALESCE ( [P6 X Deals], 0 ), "#,0" ) & " new deals in the last "
+        & IF ( _w = 1, "week", _w & " weeks" )
+        & IF ( NOT ISBLANK ( _t ), " · average tenor " & IF ( _t < 0.25, FORMAT ( _t * 365, "0" ) & " days", IF ( _t < 1, FORMAT ( _t * 12, "0" ) & " months", FORMAT ( _t, "0.0" ) & " years" ) )
+            & IF ( NOT ISBLANK ( _n ), " (12-wk avg " & IF ( _n < 0.25, FORMAT ( _n * 365, "0" ) & " days", IF ( _n < 1, FORMAT ( _n * 12, "0" ) & " months", FORMAT ( _n, "0.0" ) & " years" ) ) & ")" ) )
+
+
+
+
+P6 X1 Notional Δ Text =
+VAR _v = [P6 X Notional Δ]
+RETURN IF ( ISBLANK ( _v ), "too few deals to compare", "notional " & FORMAT ( _v, "+0%;-0%;0%" ) & " vs 12-wk avg" )
+
+
+P6 X1 Deals Δ Text =
+VAR _v = [P6 X Deals Δ]
+RETURN IF ( NOT ISBLANK ( _v ), "deals " & FORMAT ( _v, "+0%;-0%;0%" ) & " vs 12-wk avg" )
+
